@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Clients · Odoo PM Bot{% endblock %}
+
+{% block content %}
+<div class="flex items-baseline justify-between">
+  <h1 class="text-xl font-semibold tracking-tight">Clients</h1>
+  <a href="/clients/new"
+     class="btn-primary text-[13px]">
+    Add client
+  </a>
+</div>
+
+{% if clients %}
+<div class="mt-6 overflow-hidden rounded border border-slate-200 bg-white">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500">
+      <tr>
+        <th class="px-4 py-2.5 text-left font-medium">Client</th>
+        <th class="px-4 py-2.5 text-left font-medium">GitHub</th>
+        <th class="px-4 py-2.5 text-left font-medium">Odoo</th>
+        <th class="px-4 py-2.5 text-left font-medium">Hosting</th>
+        <th class="px-4 py-2.5 text-left font-medium">Credentials</th>
+        <th class="px-4 py-2.5 text-left font-medium">State</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for c in clients %}
+      <tr class="hover:bg-slate-50 {{ 'opacity-50' if not c.active }}">
+        <td class="px-4 py-2.5">
+          <a href="/clients/{{ c.id }}" class="font-medium text-accent hover:underline">{{ c.name }}</a>
+          <div class="font-mono text-xs text-slate-400">{{ c.slug }}</div>
+        </td>
+        <td class="px-4 py-2.5 font-mono text-xs text-slate-500">{{ c.github or '—' }}</td>
+        <td class="px-4 py-2.5 text-slate-600">{{ c.odoo_version }}</td>
+        <td class="px-4 py-2.5 text-slate-600">{{ c.hosting_label }}</td>
+        <td class="px-4 py-2.5">
+          {% if c.has_credentials %}
+            <span class="rounded border border-emerald-600 bg-emerald-50 px-2 py-0.5
+                         text-[11px] uppercase tracking-wide text-emerald-700">stored</span>
+          {% else %}
+            <span class="rounded border border-amber-500 bg-amber-50 px-2 py-0.5
+                         text-[11px] uppercase tracking-wide text-amber-700">missing</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-2.5 text-xs text-slate-500">{{ 'active' if c.active else 'inactive' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="mt-6 rounded border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
+  <p class="text-sm text-slate-600">No clients yet.</p>
+</div>
+{% endif %}
+{% endblock %}

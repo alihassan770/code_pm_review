@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}{{ client.name }} · hygiene audit{% endblock %}
+
+{#
+  Every check is listed, passing ones included. §3 requires a pass to be
+  auditable after the fact and not merely a silence — a page that shows only
+  problems cannot tell you whether the mail check ran at all.
+#}
+
+{% macro status_pill(status) -%}
+  {% set styles = {
+    'pass':    'bg-emerald-50 text-emerald-700 ring-emerald-200',
+    'fail':    'bg-red-50 text-red-700 ring-red-200',
+    'warn':    'bg-amber-50 text-amber-800 ring-amber-200',
+    'skipped': 'bg-slate-100 text-slate-500 ring-slate-200',
+    'error':   'bg-amber-50 text-amber-800 ring-amber-200',
+  } %}
+  <span class="rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide
+               ring-1 {{ styles.get(status, 'bg-slate-100 text-slate-500 ring-slate-200') }}">
+    {{ status }}
+  </span>
+{%- endmacro %}
+
+{% block content %}
+<div class="max-w-3xl">
+  <div class="flex items-baseline justify-between">
+    <div>
+      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }} — hygiene audit</h1>
+      <p class="mt-1 font-mono text-xs text-slate-400">
+        {{ client.staging_db or 'no database configured' }}
+      </p>
+    </div>
+    <div class="flex items-center gap-4 text-sm">
+      <a href="/clients/{{ client.id }}" class="text-accent hover:underline">Client</a>
+      <a href="/clients/{{ client.id }}/census" class="text-accent hover:underline">Census</a>
+      <a href="/audit" class="text-accent hover:underline">All instances</a>
+    </div>
+  </div>
+
+  <form method="post" action="/clients/{{ client.id }}/audit" class="mt-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn-primary" {{ 'disabled' if not client.has_credentials }}>
+      {{ 'Run the audit' if audit else 'Run the first audit' }}
+    </button>
+    {% if not client.has_credentials %}
+    <span class="ml-3 text-sm text-slate-500">
+      Store RPC credentials on the <a href="/clients/{{ client.id }}"
+      class="text-accent hover:underline">client page</a> first.
+    </span>
+    {% endif %}
+  </form>
+
+  {% if not audit %}
+  <p class="mt-8 rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
+    This instance has never been audited. That is not the same as clean — until the
+    checks have run, nobody knows whether it has live crons or an active mail server.
+  </p>
+
+  {% else %}
+
+  <div class="mt-6 rounded-xl border p-5
+       {{ 'border-red-200 bg-red-50' if audit.verdict == 'refuse'
+          else 'border-amber-200 bg-amber-50' if audit.verdict == 'error'
+          else 'border-emerald-200 bg-emerald-50' }}">
+    <p class="text-sm font-semibold
+       {{ 'text-red-800' if audit.verdict == 'refuse'
+          else 'text-amber-900' if audit.verdict == 'error' else 'text-emerald-800' }}">
+      {% if audit.verdict == 'refuse' %}
+        The gate will refuse to run against this instance.
+      {% elif audit.verdict == 'error' %}
+        The audit could not complete, so this instance's state is unknown.
+      {% else %}
+        Every check passed. The gate may run here.
+      {% endif %}
+    </p>
+    {% if audit.error %}
+    <p class="mt-1.5 text-sm text-amber-900">{{ audit.error }}</p>
+    {% endif %}
+    <p class="mt-1.5 text-xs text-slate-600">
+      {{ audit.started_at.strftime('%Y-%m-%d %H:%M') }} ·
+      {{ audit.duration_ms }} ms ·
+      Odoo {{ audit.server_version or '?' }} ·
+      {{ audit.staging_url or '—' }}
+    </p>
+    <p class="mt-1 text-xs text-slate-500">
+      Re-run before anything touches this instance. This result is never cached for a
+      run — a hosting provider can re-enable crons during a platform update without
+      telling anyone.
+    </p>
+  </div>
+
+  <div class="mt-6 space-y-3">
+    {% for c in checks %}
+    <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+      <div class="flex items-start justify-between gap-4">
+        <p class="text-sm font-medium">{{ c.title }}</p>
+        {{ status_pill(c.status) }}
+      </div>
+      {% if c.detail %}
+      <p class="mt-1.5 text-[13px] text-slate-600">{{ c.detail }}</p>
+      {% endif %}
+      {% if c.evidence %}
+      <ul class="mt-2 space-y-0.5">
+        {% for e in c.evidence %}
+        <li class="font-mono text-[11px] text-slate-500">{{ e }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <p class="mt-2 font-mono text-[10px] uppercase tracking-wider text-slate-300">{{ c.id }}</p>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if history|length > 1 %}
+  <h2 class="mt-10 text-sm font-semibold">Earlier audits</h2>
+  <ul class="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white text-sm">
+    {% for h in history[1:] %}
+    <li class="flex items-center justify-between px-4 py-2">
+      <span class="text-slate-600">{{ h.started_at.strftime('%Y-%m-%d %H:%M') }}</span>
+      <span class="font-mono text-xs {{ 'text-red-700' if h.verdict == 'refuse'
+                                        else 'text-amber-700' if h.verdict == 'error'
+                                        else 'text-emerald-700' }}">{{ h.verdict }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

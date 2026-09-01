@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Odoo PM Bot{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/htmx.org@2.0.3"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        },
+        colors: {
+          brand: {
+            50:'#f5f3ff',100:'#ede9fe',200:'#ddd6fe',300:'#c4b5fd',400:'#a78bfa',
+            500:'#8b5cf6',600:'#7c3aed',700:'#6d28d9',800:'#5b21b6',900:'#4c1d95',
+            950:'#2e1065',
+          },
+          accent: { DEFAULT:'#8b5cf6', ink:'#6d28d9', soft:'#f5f3ff', dark:'#a78bfa' },
+          // Status is a reserved role, never reused for decoration, and always
+          // shipped with an icon + label so meaning never rides on hue alone.
+          status: { good:'#0ca30c', warning:'#fab219', serious:'#ec835a', critical:'#d03b3b' },
+        },
+        boxShadow: {
+          card: '0 1px 2px rgba(16,12,32,.04), 0 12px 32px -16px rgba(76,29,149,.22)',
+        },
+      },
+    },
+  }
+</script>
+<style>
+  body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  .field {
+    width:100%; border-radius:.6rem; border:1px solid #e2e8f0; background:#fff;
+    padding:.625rem .8rem; font-size:.9rem; color:#0f172a;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  .field::placeholder { color:#cbd5e1; }
+  .field:focus { outline:none; border-color:#8b5cf6; box-shadow:0 0 0 3.5px rgba(139,92,246,.16); }
+  .label {
+    display:block; font-size:.7rem; font-weight:600; letter-spacing:.07em;
+    text-transform:uppercase; color:#64748b; margin-bottom:.4rem;
+  }
+  .btn-primary {
+    display:inline-flex; align-items:center; justify-content:center; gap:.45rem;
+    border-radius:.6rem; padding:.575rem 1rem; font-size:.875rem; font-weight:600;
+    color:#fff; background-image:linear-gradient(180deg,#8b5cf6,#7c3aed);
+    box-shadow:0 1px 2px rgba(16,12,32,.08), 0 10px 22px -12px rgba(124,58,237,.6);
+    transition:transform .12s, box-shadow .12s, filter .12s;
+  }
+  .btn-primary:hover { filter:brightness(1.05); }
+  .btn-primary:active { transform:translateY(1px); }
+  .btn-ghost {
+    display:inline-flex; align-items:center; gap:.4rem; border-radius:.6rem;
+    border:1px solid #e2e8f0; background:#fff; padding:.55rem .9rem;
+    font-size:.875rem; font-weight:500; color:#334155; transition:background .12s;
+  }
+  .btn-ghost:hover { background:#f8fafc; }
+  .card { border:1px solid #e2e8f0; border-radius:.85rem; background:#fff; }
+  .grid-veil {
+    background-image:
+      linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px);
+    background-size:40px 40px;
+  }
+  .nav-link {
+    display:flex; align-items:center; gap:.7rem; border-radius:.6rem;
+    padding:.5rem .7rem; font-size:.875rem; font-weight:500;
+    color:rgba(237,233,254,.65); transition:background .12s, color .12s;
+  }
+  .nav-link:hover { background:rgba(255,255,255,.07); color:#fff; }
+  .nav-link.is-active { background:rgba(255,255,255,.12); color:#fff; }
+  .nav-link.is-active .nav-ico { color:#c4b5fd; }
+  .nav-ico { width:1.05rem; height:1.05rem; flex:none; color:rgba(196,181,253,.6); }
+</style>
+{% block head_extra %}{% endblock %}
+</head>
+<body class="h-full bg-slate-50 font-sans text-slate-900">
+
+{% if user %}
+{% set path = request.url.path %}
+{% set nav = [
+  ('/dashboard', 'Dashboard',
+   'M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5'),
+  ('/clients', 'Clients',
+   'M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM20 19v-1.5a3.5 3.5 0 0 0-2.6-3.4M15.5 4.2a3.5 3.5 0 0 1 0 6.6'),
+  ('/audit', 'Hygiene audit',
+   'M9 12.5l2 2 4-4M12 3l7.5 3.4v5.2c0 4.3-3.1 8.3-7.5 9.4-4.4-1.1-7.5-5.1-7.5-9.4V6.4L12 3Z')
+] %}
+
+<div class="flex min-h-screen">
+
+  {# ---- sidebar (lg and up) ------------------------------------------------
+       Deliberately the same dark violet as the sign-in panel, so the surface
+       you log in through becomes the surface you work in. #}
+  <aside class="relative hidden w-60 shrink-0 overflow-hidden bg-brand-950 lg:flex lg:flex-col">
+    <div class="absolute inset-0 bg-gradient-to-b from-brand-800 via-brand-900 to-brand-950"></div>
+    <div class="grid-veil absolute inset-0"></div>
+    <div class="absolute -left-16 -top-20 h-64 w-64 rounded-full bg-brand-500/20 blur-3xl"></div>
+
+    <div class="relative flex h-full flex-col">
+      <a href="/dashboard" class="flex items-center gap-2.5 px-5 py-5">
+        <span class="grid h-8 w-8 place-items-center rounded-xl bg-white/12 text-[13px]
+                     font-bold text-white ring-1 ring-white/20">P</span>
+        <span class="text-[14.5px] font-semibold tracking-tight text-white">Odoo PM Bot</span>
+      </a>
+
+      <nav class="mt-1 space-y-0.5 px-3">
+        {% for href, labelled, d in nav %}
+        <a href="{{ href }}" class="nav-link {{ 'is-active' if path.startswith(href) }}">
+          <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="{{ d }}"/>
+          </svg>
+          {{ labelled }}
+        </a>
+        {% endfor %}
+      </nav>
+
+      <div class="mt-auto px-3 pb-4">
+        <div class="mb-2 px-2">
+          <p class="text-[10px] font-semibold uppercase tracking-[.12em] text-brand-300/40">
+            Phase A of I
+          </p>
+          <p class="mt-1 text-[11.5px] leading-relaxed text-brand-100/40">
+            App shell. Census and audit arrive in phase B.
+          </p>
+        </div>
+
+        <div class="flex items-center gap-2.5 rounded-xl bg-white/[.07] px-2.5 py-2">
+          <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-400/25
+                       text-[11px] font-semibold text-white">{{ user.name[:1]|upper }}</span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-[12.5px] font-medium text-white">{{ user.name }}</p>
+            <p class="truncate text-[11px] text-brand-200/45">
+              {{ 'Administrator' if user.is_admin else 'Member' }}
+            </p>
+          </div>
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button title="Sign out"
+                    class="grid h-7 w-7 place-items-center rounded-lg text-brand-200/50
+                           hover:bg-white/10 hover:text-white">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 17l5-5-5-5M20 12H9M12 19H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/>
+              </svg>
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  {# ---- compact bar below lg ---- #}
+  <div class="flex min-w-0 flex-1 flex-col">
+    <header class="border-b border-slate-200 bg-white lg:hidden">
+      <div class="flex h-14 items-center gap-4 px-4">
+        <a href="/dashboard" class="flex items-center gap-2">
+          <span class="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-b
+                       from-brand-500 to-brand-700 text-[12px] font-bold text-white">P</span>
+          <span class="text-[14px] font-semibold tracking-tight">Odoo PM Bot</span>
+        </a>
+        <nav class="flex items-center gap-1 text-sm">
+          {% for href, labelled, d in nav %}
+          <a href="{{ href }}" class="rounded-lg px-2.5 py-1.5 font-medium
+             {{ 'bg-brand-50 text-brand-700' if path.startswith(href) else 'text-slate-500' }}">
+            {{ labelled }}</a>
+          {% endfor %}
+        </nav>
+        <form method="post" action="/logout" class="ml-auto">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="text-sm text-slate-500">Sign out</button>
+        </form>
+      </div>
+    </header>
+
+{% endif %}
+
+{# One <main>, wrapped in the app chrome only when signed in. Split this way
+   rather than duplicating the block: Jinja allows a block to be *defined* once,
+   and the sign-in and setup pages need the same `content` block without the
+   sidebar around it. #}
+<main class="{% block main_class %}mx-auto w-full max-w-5xl px-6 py-9 lg:px-10{% endblock %}">
+{% block content %}{% endblock %}
+</main>
+
+{% if user %}
+  </div>
+</div>
+{% endif %}
+
+</body>
+</html>

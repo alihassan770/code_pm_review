@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Odoo PM Bot{% endblock %}
+{% block main_class %}min-h-full{% endblock %}
+
+{% block content %}
+<div class="grid min-h-screen lg:grid-cols-[1.05fr_1fr]">
+
+  {# Brand panel. Hidden on small screens so the form is never pushed below the fold. #}
+  <aside class="relative hidden overflow-hidden bg-brand-900 lg:block">
+    <div class="absolute inset-0 bg-gradient-to-br from-brand-700 via-brand-800 to-brand-950"></div>
+    <div class="grid-veil absolute inset-0"></div>
+    <div class="absolute -left-24 -top-24 h-96 w-96 rounded-full bg-brand-500/25 blur-3xl"></div>
+    <div class="absolute -bottom-32 -right-16 h-96 w-96 rounded-full bg-violet-400/15 blur-3xl"></div>
+
+    <div class="relative flex h-full flex-col justify-between p-12 xl:p-16">
+      <div class="flex items-center gap-3">
+        <span class="grid h-9 w-9 place-items-center rounded-xl bg-white/12 text-sm font-bold
+                     text-white ring-1 ring-white/20 backdrop-blur">P</span>
+        <span class="text-[15px] font-semibold tracking-tight text-white">Odoo PM Bot</span>
+      </div>
+
+      <div class="max-w-md">
+        <h2 class="text-[2rem] font-semibold leading-[1.15] tracking-tight text-white">
+          Between <span class="text-brand-300">“it’s done”</span><br>and
+          <span class="text-brand-300">“ship it”</span>.
+        </h2>
+        <p class="mt-5 text-[15px] leading-relaxed text-brand-100/75">
+          Every task verified against the client’s own staging instance — their real data,
+          their real modules — and the data left exactly as it was found.
+        </p>
+
+        <dl class="mt-10 space-y-4">
+          {% for k, v in [
+            ('Runs in place', 'One managed staging database. No clones, no copies.'),
+            ('Leaves no trace', 'Scenarios roll back. Anything that cannot is reported.'),
+            ('Hands it back', 'Pause mid-run when someone needs the instance.')] %}
+          <div class="flex gap-3">
+            <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300"></span>
+            <div>
+              <dt class="text-sm font-medium text-white">{{ k }}</dt>
+              <dd class="text-sm text-brand-100/60">{{ v }}</dd>
+            </div>
+          </div>
+          {% endfor %}
+        </dl>
+      </div>
+
+      <p class="text-xs text-brand-200/45">HST internal tooling</p>
+    </div>
+  </aside>
+
+  {# Form #}
+  <div class="flex items-center justify-center bg-white px-6 py-14 sm:px-12">
+    <div class="w-full max-w-[22rem]">
+
+      <div class="mb-9 flex items-center gap-2.5 lg:hidden">
+        <span class="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-b from-brand-500
+                     to-brand-700 text-[13px] font-bold text-white">P</span>
+        <span class="text-[15px] font-semibold tracking-tight">Odoo PM Bot</span>
+      </div>
+
+      <h1 class="text-[1.6rem] font-semibold tracking-tight text-slate-900">Welcome back</h1>
+      <p class="mt-1.5 text-[15px] text-slate-500">Sign in with your Odoo account.</p>
+
+      {% if error %}
+      <div class="mt-6 rounded-xl border {{ 'border-amber-200 bg-amber-50' if connection_error
+                                            else 'border-rose-200 bg-rose-50' }} px-4 py-3">
+        <div class="flex gap-2.5">
+          <svg class="mt-0.5 h-4 w-4 shrink-0 {{ 'text-amber-500' if connection_error else 'text-rose-500' }}"
+               viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/>
+          </svg>
+          <p class="text-[13px] leading-relaxed {{ 'text-amber-900' if connection_error else 'text-rose-800' }}">
+            {{ error }}
+          </p>
+        </div>
+        {# A connection failure is never fixable from this form, so offer the
+           page that can fix it rather than leaving people retrying a password. #}
+        {% if connection_error and can_reconfigure %}
+        <a href="/setup" class="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border
+                  border-amber-300 bg-white px-2.5 py-1.5 text-[12.5px] font-medium
+                  text-amber-900 hover:bg-amber-100">
+          Fix the Odoo connection
+          <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M7.3 14.7a1 1 0 010-1.4L10.6 10 7.3 6.7a1 1 0 111.4-1.4l4 4a1 1 0 010 1.4l-4 4a1 1 0 01-1.4 0z" clip-rule="evenodd"/>
+          </svg>
+        </a>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <form method="post" action="/login" class="mt-7 space-y-5">
+        <input type="hidden" name="next" value="{{ next }}">
+
+        <div>
+          <label for="login" class="label">Odoo login</label>
+          <input id="login" name="login" type="text" autocomplete="username" autofocus required
+                 placeholder="you@company.com" value="{{ login_value or '' }}" class="field">
+        </div>
+
+        <div>
+          <label for="password" class="label">Password or API key</label>
+          <input id="password" name="password" type="password" autocomplete="current-password"
+                 required placeholder="••••••••••••" class="field">
+        </div>
+
+        <button type="submit" class="btn-primary w-full">
+          Sign in
+          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M7.3 14.7a1 1 0 010-1.4L10.6 10 7.3 6.7a1 1 0 111.4-1.4l4 4a1 1 0 010 1.4l-4 4a1 1 0 01-1.4 0z" clip-rule="evenodd"/>
+          </svg>
+        </button>
+      </form>
+
+      <div class="mt-7 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+        <p class="text-[12.5px] leading-relaxed text-slate-500">
+          <span class="font-medium text-slate-700">Two-factor enabled?</span>
+          A password will not work. Create an API key in Odoo under
+          <span class="text-slate-700">Preferences → Account Security</span> and use it here.
+        </p>
+      </div>
+
+      <div class="mt-6 border-t border-slate-100 pt-4 text-center">
+        <p class="text-xs leading-relaxed text-slate-400">
+          Authenticating against
+          <span class="font-mono text-slate-500">{{ odoo_url }}</span>
+          {% if odoo_db %}<br><span class="font-mono text-slate-500">{{ odoo_db }}</span>{% endif %}
+        </p>
+        {% if can_reconfigure %}
+        <a href="/setup" class="mt-1.5 inline-block text-xs font-medium text-brand-600
+                  underline underline-offset-2 hover:text-brand-700">
+          Wrong server or database? Change it
+        </a>
+        {% endif %}
+        <p class="mt-2 text-xs text-slate-400">No signup — access follows your Odoo account.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

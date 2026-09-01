@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}{{ client.name }} · Odoo PM Bot{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl">
+  <div class="flex items-baseline justify-between">
+    <div>
+      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }}</h1>
+      <p class="mt-1 font-mono text-xs text-slate-400">{{ client.slug }}</p>
+    </div>
+    <a href="/clients/{{ client.id }}/edit" class="text-sm text-accent hover:underline">Edit</a>
+  </div>
+
+  {# Phase B pages. Linked here because the detail page is where someone lands
+     when they want to know anything about a client. #}
+  <nav class="mt-5 flex flex-wrap gap-2">
+    {% for href, labelled in [
+        ('audit',     'Hygiene audit'),
+        ('census',    'Instance census'),
+        ('knowledge', 'Knowledge base'),
+        ('coverage',  'Coverage map'),
+        ('team',      'Team access')] %}
+    <a href="/clients/{{ client.id }}/{{ href }}"
+       class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[13px]
+              font-medium text-slate-600 hover:border-brand-300 hover:text-brand-700">
+      {{ labelled }}
+    </a>
+    {% endfor %}
+  </nav>
+
+  <dl class="mt-6 grid grid-cols-3 gap-x-6 gap-y-3 rounded border border-slate-200 bg-white p-5 text-sm">
+    <dt class="text-slate-500">Odoo version</dt>
+    <dd class="col-span-2">{{ client.odoo_version }}</dd>
+
+    <dt class="text-slate-500">Hosting</dt>
+    <dd class="col-span-2">{{ client.hosting_label }}</dd>
+
+    <dt class="text-slate-500">Staging URL</dt>
+    <dd class="col-span-2 font-mono text-xs break-all">
+      {{ client.staging_url or '—' }}
+    </dd>
+
+    <dt class="text-slate-500">Staging database</dt>
+    <dd class="col-span-2 font-mono text-xs">{{ client.staging_db or '—' }}</dd>
+
+    <dt class="text-slate-500">Name pattern</dt>
+    <dd class="col-span-2 font-mono text-xs">{{ client.db_name_pattern }}</dd>
+
+    <dt class="text-slate-500">GitHub</dt>
+    <dd class="col-span-2 font-mono text-xs">{{ client.github or '—' }}</dd>
+
+    <dt class="text-slate-500">Branch mode</dt>
+    <dd class="col-span-2">
+      {{ client.branch_mode }}
+      {% if client.branch_mode == 'shared' %}
+      <span class="ml-1 text-xs text-amber-700">
+        — regressions cannot be attributed to a task
+      </span>
+      {% endif %}
+    </dd>
+
+    <dt class="text-slate-500">Capabilities</dt>
+    <dd class="col-span-2">
+      {% for cap in client.capabilities %}
+      <span class="mr-1 rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5
+                   font-mono text-[11px] text-slate-600">{{ cap }}</span>
+      {% endfor %}
+      <span class="ml-1 text-xs text-slate-400">no <span class="font-mono">db</span> capability exists</span>
+    </dd>
+  </dl>
+
+  <h2 class="mt-10 text-sm font-semibold">Staging RPC credentials</h2>
+  <p class="mt-1 text-sm text-slate-600">
+    Used by the census, the pre-flight audit, and the probe. Verified against the live
+    instance before it is stored, and encrypted at rest.
+  </p>
+
+  {% if cred_error %}
+  <div class="mt-4 rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
+    {{ cred_error }}
+  </div>
+  {% endif %}
+
+  {% if client.has_credentials %}
+  <p class="mt-3 inline-block rounded border border-emerald-600 bg-emerald-50 px-2 py-0.5
+            text-[11px] uppercase tracking-wide text-emerald-700">credentials stored</p>
+  <p class="mt-2 text-xs text-slate-500">
+    The stored key is never shown again. Submitting the form replaces it.
+  </p>
+  {% endif %}
+
+  <form method="post" action="/clients/{{ client.id }}/credentials"
+        class="mt-4 space-y-4 rounded border border-slate-200 bg-white p-5">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div>
+      <label for="rpc_login" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
+        Login on the staging instance
+      </label>
+      <input id="rpc_login" name="rpc_login" type="text" autocomplete="off"
+             class="field">
+    </div>
+    <div>
+      <label for="rpc_api_key" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
+        API key
+      </label>
+      <input id="rpc_api_key" name="rpc_api_key" type="password" autocomplete="off"
+             class="field">
+      <p class="mt-1.5 text-xs text-slate-500">
+        An API key, not a password. Odoo requires one for RPC when the account has 2FA, and it
+        can be revoked without changing a password a human also uses.
+        <br>
+        Browser personas for screenshot evidence need real passwords instead — an API key
+        cannot open a web session. Those arrive in phase B.
+      </p>
+    </div>
+    <button type="submit"
+            class="btn-primary">
+      Verify and store
+    </button>
+  </form>
+</div>
+{% endblock %}
