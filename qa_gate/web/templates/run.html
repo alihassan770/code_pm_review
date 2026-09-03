@@ -1,0 +1,579 @@
+{% extends "base.html" %}
+{% block title %}Review · {{ run.task_name or run.task_id }}{% endblock %}
+
+{% block head_extra %}
+{# Refresh while work is in flight, and stop once it is not. A page that kept
+   polling a finished run would be busy doing nothing; one that never polled
+   would leave somebody staring at "running" long after it ended.
+
+   Deliberately NOT <meta http-equiv="refresh">. That fires unconditionally, so
+   it reloaded the page out from under anyone answering an open question and
+   threw away what they had typed. A reload cannot be allowed to destroy work
+   the page itself asked for, and meta-refresh has no way to know. #}
+{% if run.state in ('queued', 'running') %}
+<script>
+  (function () {
+    var EVERY = 6000;
+
+    function typing() {
+      // Someone is in a field right now.
+      var el = document.activeElement;
+      if (el && /^(TEXTAREA|INPUT|SELECT)$/.test(el.tagName)) return true;
+      // Or has left something half-written in one. Blurring a box you have not
+      // submitted yet must not be the moment the page eats it.
+      var boxes = document.querySelectorAll('textarea, input[type=text]');
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].value.trim() !== '') return true;
+      }
+      return false;
+    }
+
+    setInterval(function () {
+      var note = document.getElementById('refresh-paused');
+      if (typing()) {
+        if (note) note.classList.remove('hidden');
+        return;                       // try again next tick
+      }
+      if (note) note.classList.add('hidden');
+      window.location.reload();
+    }, EVERY);
+  })();
+</script>
+{% endif %}
+{% endblock %}
+
+{% macro secs(n) -%}
+{%- if n >= 60 %}{{ n // 60 }}m {{ '%02d'|format(n % 60) }}s{% else %}{{ n }}s{% endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="max-w-3xl">
+  <a href="/clients/{{ client.id }}/tasks"
+     class="mb-4 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[13px]
+            font-medium text-brand-600 hover:bg-brand-50 hover:text-brand-700">
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 18l-6-6 6-6"/></svg>
+    Back to tasks
+  </a>
+
+  {% if busy %}
+  <div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
+    This client already had a review in progress, so you are looking at that one.
+    Only one run may hold a staging instance at a time.
+  </div>
+  {% endif %}
+
+  <div class="flex items-start justify-between gap-4">
+    <div class="min-w-0">
+      <h1 class="truncate text-xl font-semibold tracking-tight">
+        {{ run.task_name or 'Task #' ~ run.task_id }}
+      </h1>
+      <p class="mt-1 text-xs text-slate-500">
+        {{ client.name }} · task <span class="font-mono">#{{ run.task_id }}</span>
+        {% if run.commit_sha %} · code at <span class="font-mono">{{ run.short_sha }}</span>{% endif %}
+        {% if run.persona_key %} · as <span class="font-mono">{{ run.persona_key }}</span>{% endif %}
+      </p>
+    </div>
+
+    {% set badge = {'queued':'bg-slate-100 text-slate-700 ring-slate-200',
+                    'running':'bg-brand-50 text-brand-700 ring-brand-200',
+                    'paused':'bg-amber-50 text-amber-800 ring-amber-200',
+                    'done':'bg-emerald-50 text-emerald-800 ring-emerald-200',
+                    'cancelled':'bg-slate-100 text-slate-600 ring-slate-200',
+                    'failed':'bg-rose-50 text-rose-800 ring-rose-200'} %}
+    <span class="shrink-0 rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase
+                 tracking-wide ring-1 {{ badge.get(run.state, 'bg-slate-100 text-slate-700 ring-slate-200') }}">
+      {{ run.state }}{% if run.state in ('queued','running') %} …{% endif %}
+    </span>
+  </div>
+
+  {# Controls. Pause is a request honoured at the next phase boundary, not an
+     interruption: stopping mid-phase could leave a form half-filled on the
+     client's instance, which is the state a pause must never leave behind. #}
+  <div class="mt-4 flex flex-wrap items-center gap-2">
+    {% if run.state in ('queued', 'running') %}
+    <form method="post" action="/runs/{{ run.id }}/pause">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn-ghost text-[13px]">Pause</button>
+    </form>
+    {% elif run.state == 'paused' %}
+    {% if blocked_on %}
+    <span class="rounded-md bg-amber-50 px-2.5 py-1 text-[12px] font-medium text-amber-900
+                 ring-1 ring-amber-200">
+      Waiting on {{ blocked_on|length }} answer{{ '' if blocked_on|length == 1 else 's' }} below
+    </span>
+    {% else %}
+    <form method="post" action="/runs/{{ run.id }}/resume">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn-primary text-[13px]">Resume</button>
+    </form>
+    {% endif %}
+    {% endif %}
+    {% if run.state in ('queued', 'running', 'paused') %}
+    <form method="post" action="/runs/{{ run.id }}/cancel"
+          onsubmit="return confirm('Cancel this review? It cannot be resumed.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn-ghost text-[13px]">Cancel</button>
+    </form>
+    {% endif %}
+    <span id="refresh-paused"
+          class="hidden rounded-md bg-amber-50 px-2 py-0.5 text-[11.5px] font-medium
+                 text-amber-800 ring-1 ring-amber-200">
+      Auto-refresh paused while you type
+    </span>
+    <span class="text-[12px] text-slate-500">
+      {{ run.progress[0] }} of {{ run.progress[1] }} phases complete
+      {%- if total_secs %} · {{ secs(total_secs) }} total{% endif %}
+      {% if run.state == 'paused' %} · paused at <span class="font-mono">{{ run.phase }}</span>{% endif %}
+    </span>
+  </div>
+
+  {% if run.error %}
+  <div class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-800">
+    {{ run.error }}
+  </div>
+  {% endif %}
+
+  {% if run.verdict %}
+  {% set vcol = {'pass':'emerald','partial':'amber','fail':'rose'} %}
+  {% set c = vcol.get(run.verdict, 'slate') %}
+  <div class="mt-5 rounded-xl border border-{{ c }}-200 bg-{{ c }}-50 px-4 py-3">
+    <p class="text-[11px] font-semibold uppercase tracking-wide text-{{ c }}-700">Verdict</p>
+    <p class="mt-0.5 text-[15px] font-semibold text-{{ c }}-900">{{ run.verdict }}</p>
+    {% if run.summary %}<p class="mt-1 text-[13px] text-{{ c }}-900">{{ run.summary }}</p>{% endif %}
+  </div>
+  {% endif %}
+
+  {% set done_map = {} %}
+  {% for s in run.steps %}{% set _ = done_map.update({s.phase: s}) %}{% endfor %}
+
+  {#
+    A segmented ring, one arc per phase, clockwise in pipeline order.
+
+    Deliberately NOT a pie. A pie encodes part-of-a-whole magnitude, and these
+    phases are neither equal nor a composition — `execute` takes minutes while
+    `verdict` is arithmetic. Sizing slices by anything real would make the
+    picture about duration; sizing them equally would be a lie dressed as data.
+    What actually matters is *order* and *state per step*, which a segmented
+    ring shows and a pie destroys.
+
+    Every arc is paired with its name in the list beside it. Colour carries no
+    meaning on its own here — a reviewer who cannot separate the emerald from
+    the violet still reads the same page.
+  #}
+  {% set r = 54 %}
+  {% set circ = 2 * 3.14159265 * r %}
+  {% set seg = circ / phases|length %}
+  {% set gap = 5 %}
+
+  <div class="card mt-6 flex flex-col items-center gap-6 p-5 sm:flex-row sm:items-center">
+    <div class="relative shrink-0">
+      <svg viewBox="0 0 140 140" class="h-36 w-36 -rotate-90" role="img"
+           aria-label="{{ run.progress[0] }} of {{ run.progress[1] }} phases complete">
+        {% for phase in phases %}
+        {% set step = done_map.get(phase) %}
+        {% set state = step.state if step else ('running' if run.phase == phase
+                        and run.state == 'running' else 'pending') %}
+        {% set stroke = {'done':'#0ca30c', 'failed':'#d03b3b',
+                         'running':'#8b5cf6', 'pending':'#e2e8f0'} %}
+        <circle cx="70" cy="70" r="{{ r }}" fill="none" stroke-linecap="round"
+                stroke="{{ stroke.get(state, '#e2e8f0') }}" stroke-width="12"
+                stroke-dasharray="{{ '%.2f'|format(seg - gap) }} {{ '%.2f'|format(circ - seg + gap) }}"
+                stroke-dashoffset="{{ '%.2f'|format(-1 * loop.index0 * seg) }}"
+                class="{{ 'animate-pulse' if state == 'running' }}">
+          <title>{{ phase_titles.get(phase, phase) }} — {{ state }}</title>
+        </circle>
+        {% endfor %}
+      </svg>
+      <div class="pointer-events-none absolute inset-0 grid place-items-center">
+        <div class="text-center">
+          <p class="text-[26px] font-semibold leading-none tracking-tight text-slate-900">
+            {{ run.progress[0] }}<span class="text-slate-300">/</span>{{ run.progress[1] }}
+          </p>
+          <p class="mt-1 text-[10.5px] font-medium uppercase tracking-[.09em] text-slate-400">
+            {{ 'phases' if run.progress[0] != 1 else 'phase' }}
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <ol class="min-w-0 flex-1 space-y-1">
+      {% for phase in phases %}
+      {% set step = done_map.get(phase) %}
+      {% set state = step.state if step else ('running' if run.phase == phase
+                      and run.state == 'running' else 'pending') %}
+      <li class="flex items-center gap-2.5 text-[13px]">
+        {# Icon as well as colour, so the state survives being printed in grey. #}
+        {% if state == 'done' %}
+        <svg class="h-3.5 w-3.5 shrink-0 text-status-good" viewBox="0 0 20 20" fill="currentColor"><path
+          fill-rule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 111.4-1.4l3.8 3.8 6.8-6.8a1 1 0 011.4 0z"
+          clip-rule="evenodd"/></svg>
+        {% elif state == 'failed' %}
+        <svg class="h-3.5 w-3.5 shrink-0 text-status-critical" viewBox="0 0 20 20" fill="currentColor"><path
+          fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z"
+          clip-rule="evenodd"/></svg>
+        {% elif state == 'running' %}
+        <span class="h-3.5 w-3.5 shrink-0 animate-pulse rounded-full bg-brand-400"></span>
+        {% else %}
+        <span class="h-3.5 w-3.5 shrink-0 rounded-full border-2 border-slate-200"></span>
+        {% endif %}
+        {# A failed step must not read like a pending one. Grey is for "not yet",
+           and a failure that recedes into it is the one thing on this list
+           nobody should have to hunt for. #}
+        <span class="min-w-0 flex-1 truncate
+                     {{ 'text-slate-900 font-medium' if state in ('running', 'failed')
+                        else 'text-slate-700' if state == 'done' else 'text-slate-400' }}">
+          {{ phase_titles.get(phase, phase) }}
+        </span>
+        {# The time a step took stays on the page. "Which step is slow" is the
+           first question anyone asks about a long run, and a timer that vanishes
+           on completion only answers it for whoever was watching live. #}
+        {% if state == 'running' %}
+        <span class="shrink-0 tabular-nums text-[11px] font-medium text-brand-600">
+          {%- if elapsed %}{{ secs(elapsed) }}{% else %}running…{% endif %}
+        </span>
+        {% elif state == 'failed' %}
+        <span class="shrink-0 text-[11px] font-medium text-status-critical">
+          failed{% if durations.get(phase) %} · {{ secs(durations[phase]) }}{% endif %}
+        </span>
+        {% elif durations.get(phase) %}
+        <span class="shrink-0 tabular-nums text-[11px] text-slate-400">
+          {{ secs(durations[phase]) }}
+        </span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+
+  {# The detail below. The ring says where the run is; this says what it found. #}
+  <div class="mt-4 space-y-2">
+
+    {% for phase in phases %}
+    {% set step = done_map.get(phase) %}
+    {# A card only when there is something to say. An empty card per pending
+       phase was seven boxes of nothing under a ring that already said so. #}
+    {% if step and (step.note or (step.state == 'done' and step.detail)) %}
+    <div class="card p-4">
+      <div class="flex items-center gap-3">
+        <span class="flex-1 text-[13.5px] font-medium">{{ phase_titles.get(phase, phase) }}</span>
+        <span class="font-mono text-[11px] text-slate-400">{{ phase }}</span>
+      </div>
+
+      {% if step and step.note %}
+      <p class="mt-2 text-[12.5px] leading-relaxed text-amber-800">{{ step.note }}</p>
+      {% endif %}
+
+      {% if step and step.state == 'done' and step.detail %}
+      <div class="mt-2">
+        {% if phase == 'interpret' %}
+        <p class="text-[13px] leading-relaxed text-slate-700">{{ step.detail.get('goal') }}</p>
+        {% if step.detail.get('requirements') %}
+        <p class="mt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          {{ step.detail['requirements']|length }} requirements</p>
+        <ul class="mt-1 space-y-1">
+          {% for r in step.detail['requirements'] %}
+          <li class="text-[12.5px] text-slate-700">
+            <span class="font-mono text-[11px] text-slate-400">{{ r.get('id') }}</span>
+            {{ r.get('text') }}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if step.detail.get('ambiguities') %}
+        <p class="mt-3 text-[11px] font-semibold uppercase tracking-wide text-amber-600">
+          Needs a human answer</p>
+        <p class="mt-0.5 text-[11.5px] leading-relaxed text-slate-500">
+          {% if blocked_on %}The run stopped here rather than planning against a guess.
+          Answer or skip each one and it carries on from this point — nothing already
+          done is repeated.
+          {% else %}All answered or skipped.{% endif %}
+        </p>
+        {# Only when a plan already exists is an answer too late to just be
+           picked up — and even then it is offered, never done automatically.
+           Silently discarding five finished phases to absorb one answer was the
+           old behaviour and it was wrong. #}
+        {% if has_plan and not blocked_on %}
+        <form method="post" action="/runs/{{ run.id }}/replan" class="mt-2"
+              onsubmit="return confirm('Re-read the task and rebuild the plan? Everything from the interpretation onward is discarded and redone.');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <p class="text-[11.5px] leading-relaxed text-slate-500">
+            The plan was already built. Changing an answer now only takes effect if it
+            is rebuilt.
+          </p>
+          <button class="btn-ghost mt-1 text-[12px]">Rebuild the plan with these answers</button>
+        </form>
+        {% endif %}
+
+        <div class="mt-2 space-y-2">
+          {% for a in step.detail['ambiguities'] %}
+          {% set given = answers.get(loop.index0|string) %}
+          <div class="rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+            <p class="text-[12.5px] leading-relaxed text-amber-900">{{ a }}</p>
+
+            {% if given %}
+            <div class="mt-2 rounded-md border border-emerald-200 bg-white px-2.5 py-2">
+              {% if given.skipped %}
+              <p class="text-[12.5px] italic text-slate-500">
+                Skipped — the run used its own reading.
+              </p>
+              {% else %}
+              <p class="text-[12.5px] text-slate-800">{{ given.answer }}</p>
+              {% endif %}
+              <p class="mt-1 text-[10.5px] text-slate-400">
+                by {{ given.by or 'someone' }}
+              </p>
+            </div>
+            {% endif %}
+
+            {% if run.state not in ('cancelled',) %}
+            <form method="post" action="/runs/{{ run.id }}/answer" class="mt-2">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="index" value="{{ loop.index0 }}">
+              <input type="hidden" name="question" value="{{ a }}">
+              <textarea name="answer" rows="2"
+                        placeholder="{{ 'Change your answer…' if given else 'Answer this…' }}"
+                        class="field text-[12.5px]"></textarea>
+              <div class="mt-1.5 flex items-center gap-2">
+                <button class="btn-primary text-[12px]">
+                  {{ 'Update answer' if given else 'Answer' }}
+                </button>
+                {% if not given %}
+                {# Skipping is a decision, not silence — it says "proceed on your
+                   own reading", which is why it unblocks the run. #}
+                <button formaction="/runs/{{ run.id }}/skip" class="btn-ghost text-[12px]"
+                        title="Let the run continue using its own interpretation">
+                  Skip this
+                </button>
+                {% endif %}
+              </div>
+            </form>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% elif phase == 'code_check' %}
+        {% set syms = step.detail.get('symbols') or [] %}
+        {% if syms %}
+        <p class="text-[12.5px] text-slate-600">
+          Searched {{ step.detail.get('files_searched') }} source files at
+          <span class="font-mono">{{ (step.detail.get('commit') or '')[:8] }}</span>.
+        </p>
+        <ul class="mt-2 space-y-1">
+          {% for sym in syms %}
+          <li class="flex items-start gap-2 text-[12.5px]">
+            {% if sym.found %}
+            <svg class="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-good" viewBox="0 0 20 20"
+                 fill="currentColor"><path fill-rule="evenodd"
+              d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 111.4-1.4l3.8 3.8 6.8-6.8a1 1 0 011.4 0z"
+              clip-rule="evenodd"/></svg>
+            {% else %}
+            <svg class="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-critical" viewBox="0 0 20 20"
+                 fill="currentColor"><path fill-rule="evenodd"
+              d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z"
+              clip-rule="evenodd"/></svg>
+            {% endif %}
+            <div class="min-w-0 flex-1">
+              <span class="font-mono text-[12px] {{ 'text-slate-800' if sym.found else 'text-rose-800' }}">
+                {{ sym.name }}</span>
+              {% if sym.where %}<span class="text-slate-400"> on {{ sym.where }}</span>{% endif %}
+              {% if sym.why %}<span class="font-mono text-[10.5px] text-slate-400"> {{ sym.why }}</span>{% endif %}
+              {% if sym.found and sym.at %}
+              <div class="font-mono text-[11px] text-slate-500">
+                {{ sym.at.path }}:{{ sym.at.line }}
+              </div>
+              {% elif not sym.found %}
+              {# What was actually looked for, so "missing" can be judged rather
+                 than taken on trust — a field really named something else is a
+                 different problem from one that was never written. #}
+              <div class="text-[11px] text-slate-500">
+                not found — searched for
+                <span class="font-mono">{{ sym.searched|join(', ') }}</span>
+              </div>
+              {% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-[12.5px] text-slate-500">
+          Nothing in this task should leave a trace in the source, so there was
+          nothing to look for.
+        </p>
+        {% endif %}
+
+        {% elif phase == 'blast_radius' %}
+        <p class="text-[12.5px] text-slate-600">{{ step.detail.get('shared_table_note') }}</p>
+        <div class="mt-2 flex flex-wrap gap-1.5">
+          {% for i in step.detail.get('impacted') or [] %}
+          <span class="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11.5px]">
+            {{ i.get('flow') }}
+            <span class="font-mono text-[10px] text-slate-400">{{ i.get('model') }}</span>
+          </span>
+          {% endfor %}
+        </div>
+
+        {% elif phase == 'plan' %}
+        {% set scenarios = step.detail.get('scenarios') or [] %}
+        <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          {{ scenarios|length }} scenarios</p>
+        <ul class="mt-1 space-y-1">
+          {% for sc in scenarios %}
+          <li class="text-[12.5px] text-slate-700">
+            <span class="font-mono text-[11px] text-slate-400">{{ sc.get('id') }}</span>
+            {% if sc.get('kind') == 'regression' %}
+            <span class="rounded bg-amber-50 px-1 text-[10px] font-semibold uppercase
+                         tracking-wide text-amber-700">regression</span>
+            {% endif %}
+            {{ sc.get('title') }}
+          </li>
+          {% endfor %}
+        </ul>
+
+        {% elif phase == 'execute' %}
+        {% set runs = step.detail.get('scenarios') or [] %}
+        <div class="space-y-2">
+          {% for sc in runs %}
+          {# A scenario's own tally. `blocked` is shown separately from failed
+             throughout: a check that could not be made is not a check that
+             failed, and collapsing them would turn "we did not test this" into
+             "this is broken". #}
+          <div class="rounded-lg border border-slate-200 bg-white p-3">
+            <div class="flex items-start gap-2">
+              <span class="font-mono text-[11px] text-slate-400">{{ sc.get('id') }}</span>
+              <span class="min-w-0 flex-1 text-[12.5px] text-slate-800">{{ sc.get('title') }}</span>
+              {% if sc.get('fixtures_made') %}
+              <span class="shrink-0 rounded bg-brand-50 px-1.5 py-0.5 text-[10px]
+                           font-semibold uppercase tracking-wide text-brand-700"
+                    title="records created for this scenario, removed afterwards">
+                {{ sc.fixtures_made }} fixture{{ '' if sc.fixtures_made == 1 else 's' }}
+              </span>
+              {% endif %}
+              <span class="shrink-0 space-x-1 text-[11px]">
+                {% if sc.get('passed') %}<span class="rounded bg-emerald-50 px-1.5 py-0.5
+                  font-semibold text-emerald-700">{{ sc.passed }} passed</span>{% endif %}
+                {% if sc.get('failed') %}<span class="rounded bg-rose-50 px-1.5 py-0.5
+                  font-semibold text-rose-700">{{ sc.failed }} failed</span>{% endif %}
+                {% if sc.get('blocked') %}<span class="rounded bg-slate-100 px-1.5 py-0.5
+                  font-semibold text-slate-500">{{ sc.blocked }} not checked</span>{% endif %}
+              </span>
+            </div>
+            {% for c in sc.get('checks') or [] %}
+            <div class="mt-1.5 flex items-start gap-2 border-t border-slate-100 pt-1.5">
+              <span class="mt-0.5 h-2 w-2 shrink-0 rounded-full
+                {{ 'bg-emerald-500' if c.state == 'passed'
+                   else 'bg-rose-500' if c.state == 'failed' else 'bg-slate-300' }}"></span>
+              <div class="min-w-0 flex-1">
+                <p class="text-[12px] text-slate-700">{{ c.get('text') }}</p>
+                {% if c.get('model') and c.get('field') %}
+                <p class="font-mono text-[11px] text-slate-400">
+                  {{ c.model }}.{{ c.field }} — expected {{ c.expect }},
+                  got {{ c.actual if c.actual is not none else '—' }}
+                </p>
+                {% endif %}
+                {% if c.get('note') %}
+                <p class="text-[11.5px] text-slate-500">{{ c.note }}</p>
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+            {% for e in sc.get('fixture_errors') or [] %}
+            <p class="mt-1.5 text-[11.5px] text-amber-800">Could not set up: {{ e }}</p>
+            {% endfor %}
+            {% if sc.get('described') %}
+            <p class="mt-2 border-t border-slate-100 pt-1.5 text-[12px] italic text-slate-600">
+              {{ sc.described }}
+            </p>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+
+        {% elif phase == 'cleanup' %}
+        <p class="text-[13px] text-slate-700">
+          {{ step.detail.get('removed', 0) }} record{{ '' if step.detail.get('removed') == 1 else 's' }}
+          created by this review {{ 'was' if step.detail.get('removed') == 1 else 'were' }} removed.
+        </p>
+        {# A record we could not take back is the one thing here somebody has to
+           act on, so it is listed rather than counted. #}
+        {% if step.detail.get('refused') %}
+        <div class="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <p class="text-[12px] font-semibold text-amber-900">
+            Still on the instance — remove by hand:
+          </p>
+          <ul class="mt-1 space-y-1">
+            {% for r in step.detail['refused'] %}
+            <li class="text-[12px] text-amber-900">
+              <span class="font-mono">{{ r.model }}#{{ r.id }}</span> — {{ r.why }}
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        {% elif phase == 'verdict' %}
+        <p class="text-[13px] text-slate-700">{{ step.detail.get('note') }}</p>
+
+        {% elif phase == 'summarise' %}
+        <p class="text-[13px] leading-relaxed text-slate-700">{{ step.detail.get('summary') }}</p>
+
+        {% elif phase == 'report' %}
+        {% if step.detail.get('posted') %}
+        <p class="text-[13px] leading-relaxed text-slate-700">
+          Logged on Odoo task #{{ step.detail.get('task_id') }} as an internal note headed
+          <span class="font-mono text-[12px]">{{ step.detail.get('heading') }}</span>.
+          A log note, so no follower was notified and nothing was emailed. No attachments.
+        </p>
+        {% elif step.detail.get('skipped') %}
+        <p class="text-[13px] text-slate-600">Not posted — {{ step.detail.get('skipped') }}.</p>
+        {% else %}
+        <p class="text-[13px] leading-relaxed text-amber-900">{{ step.detail.get('error') }}</p>
+        {# The verdict is already the product; this only failed to announce it,
+           and the usual fix is a permission in Odoo somebody grants and retries. #}
+        <form method="post" action="/runs/{{ run.id }}/report" class="mt-2">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn-ghost text-[12px]">Post it again</button>
+        </form>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+
+  {# Evidence. Separate from the phase list because a reviewer scrolls to the
+     pictures, and hunting them out of six collapsed phases is friction. #}
+  {% if shots %}
+  <h2 class="mt-9 text-sm font-semibold">
+    Evidence
+    <span class="ml-1 font-normal text-slate-500">{{ shots|length }} screenshots</span>
+  </h2>
+  <div class="mt-3 space-y-4">
+    {% for s in shots %}
+    <figure class="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <a href="/runs/{{ run.id }}/shot/{{ s.id }}" target="_blank" rel="noopener">
+        <img src="/runs/{{ run.id }}/shot/{{ s.id }}" alt="{{ s.caption }}"
+             loading="lazy" class="w-full border-b border-slate-100">
+      </a>
+      <figcaption class="px-4 py-2.5">
+        <p class="text-[12.5px] font-medium text-slate-800">{{ s.caption }}</p>
+        {% if s.described %}
+        <p class="mt-1 text-[12px] leading-relaxed text-slate-600">{{ s.described }}</p>
+        {% endif %}
+      </figcaption>
+    </figure>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <p class="mt-6 text-[11.5px] text-slate-400">
+    Started {{ run.started_at.strftime('%d %b %H:%M') if run.started_at }}.
+    {% if run.state in ('queued','running') %}This page refreshes itself.{% endif %}
+  </p>
+</div>
+{% endblock %}

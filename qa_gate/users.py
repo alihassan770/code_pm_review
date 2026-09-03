@@ -39,7 +39,23 @@ def upsert_from_odoo(odoo_user: OdooUser) -> User:
 
     Keyed on `odoo_uid` rather than login, because a login can be edited in Odoo
     and we would otherwise create a second row for the same person.
+
+    ## Who is an administrator here
+
+    Being an administrator of *this app* is not the same as holding
+    `base.group_system` in Odoo, and treating them as one thing locks the actual
+    operator out of their own tool: the lead who runs the gate is very often not
+    an Odoo sysadmin. So admin is granted by either of:
+
+      * holding `base.group_system` in Odoo, or
+      * **being the first person to sign in** — somebody has to be able to
+        configure a fresh install, and there is no one else to ask.
+
+    The flag is also never taken away by a later login. Odoo group membership
+    drifts, and silently demoting the only administrator would leave nobody able
+    to reach the settings that would fix it.
     """
+    first_user = count() == 0
     row = db.query_one(
         """
         INSERT INTO users (odoo_uid, login, name, email, is_admin, last_seen_at)
@@ -48,14 +64,21 @@ def upsert_from_odoo(odoo_user: OdooUser) -> User:
             login        = EXCLUDED.login,
             name         = EXCLUDED.name,
             email        = EXCLUDED.email,
-            is_admin     = EXCLUDED.is_admin,
+            -- never demote: see the docstring
+            is_admin     = users.is_admin OR EXCLUDED.is_admin,
             last_seen_at = now()
         RETURNING *
         """,
         (odoo_user.uid, odoo_user.login, odoo_user.name,
-         odoo_user.email, odoo_user.is_admin),
+         odoo_user.email, odoo_user.is_admin or first_user),
     )
     return User.from_row(row)
+
+
+def grant_admin(login: str) -> bool:
+    """Promote by login. The escape hatch for `qa-gate grant-admin`."""
+    return bool(db.execute(
+        "UPDATE users SET is_admin = true WHERE login = %s", (login.strip(),)))
 
 
 def get(user_id: int) -> User | None:

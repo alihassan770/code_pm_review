@@ -161,9 +161,9 @@ with TestClient(create_app(), follow_redirects=False) as c:
     r = c.post("/clients/new", data={
         "csrf_token": token, "slug": SLUG, "name": "Acme Phase C",
         "odoo_version": "17.0", "hosting_platform": "odoo_sh",
-        "github": fake_github.REPO,
+        "repo_github": fake_github.REPO, "repo_base_branch": "main",
         "staging_url": STAGING_URL, "staging_db": fake_staging.DB,
-        "db_name_pattern": "%_staging", "branch_mode": "per_task", "base_branch": "main",
+        "db_name_pattern": "%_staging", "action": "save",
     })
     client_id = int(r.headers["location"].rsplit("/", 1)[1])
     token = csrf_of(c.get(f"/clients/{client_id}").text)
@@ -280,11 +280,25 @@ with TestClient(create_app(), follow_redirects=False) as c:
     print("\n== the pages ==")
     repo_sync.save(client_id, repo_sync.fetch(client, api_root=API_ROOT))
     r = c.get(f"/clients/{client_id}/knowledge")
-    check("the knowledge page renders the entries",
-          "INV-01" in r.text and "DZ-01" in r.text)
-    check("it marks the stale entry", "stale" in r.text)
-    check("it lists the scenarios that do not parse", "no tier" in r.text)
+    # The page is a list of addons, not a briefing on them. The overlay entries,
+    # scenario table and generated explanations were removed deliberately: the
+    # reviewer reading this page knows the codebase, and the agent that does not
+    # is handed the source itself (source_bundle) rather than prose about it.
+    check("the knowledge page lists the addons",
+          "hst_lot_weight" in r.text and "hst_kill_sheet" in r.text)
+    check("it shows the path column", "Path" in r.text and "Last changed" in r.text)
     check("it shows the commit it read", fake_github.HEAD[:8] in r.text)
+    check("it no longer renders overlay entries",
+          "INV-01" not in r.text and "DZ-01" not in r.text)
+    check("and no longer renders the scenario table", "no tier" not in r.text)
+    check("no success toast without a synced redirect",
+          "successfully" not in r.text)
+
+    r = c.get(f"/clients/{client_id}/knowledge?synced=created")
+    check("the redirect flag raises the success toast",
+          "created successfully" in r.text)
+    r = c.get(f"/clients/{client_id}/knowledge?synced=nonsense")
+    check("an unrecognised flag cannot forge one", "successfully" not in r.text)
 
     r = c.get(f"/clients/{client_id}/coverage")
     check("the coverage page renders", "hst_lot_weight" in r.text and "exposed" in r.text)

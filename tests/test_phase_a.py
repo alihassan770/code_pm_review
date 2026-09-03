@@ -28,6 +28,7 @@ cfg = config_mod.load()
 config_mod.save(replace(cfg, database_url=TEST_DB))
 
 from fastapi.testclient import TestClient  # noqa: E402
+from qa_gate import clients as clients_mod_probe  # noqa: E402
 from qa_gate.web.app import create_app  # noqa: E402
 
 PASS, FAIL = [], []
@@ -128,14 +129,18 @@ with TestClient(create_app(), follow_redirects=False) as c:
         "csrf_token": token, "slug": "Bad Slug!", "name": "X"})
     check("bad slug rejected", "Slug must be" in r.text)
 
+    # GitHub moved onto per-repo rows, so a bad value is rejected there now.
     r = c.post("/clients/new", data={
         "csrf_token": token, "slug": "lmm", "name": "Legacy Maker Meats",
-        "github": "not-a-repo"})
+        "repo_github": "not-a-repo", "action": "save"})
     check("bad github rejected", "owner/name" in r.text)
+    check("a rejected repo does not leave a half-made client",
+          clients_mod_probe.get_by_slug("lmm") is None
+          or "Client created, but" in r.text)
 
     r = c.post("/clients/new", data={
         "csrf_token": token, "slug": "lmm", "name": "Legacy Maker Meats",
-        "github": "hsxtech/legacymakermeats", "odoo_version": "18.0",
+        "repo_github": "hsxtech/legacymakermeats", "odoo_version": "18.0",
         "hosting_platform": "cloudpepper",
         "staging_url": f"http://127.0.0.1:{PORT}", "staging_db": fake_odoo.DB,
         "db_name_pattern": "%_staging", "branch_mode": "per_task", "base_branch": "main"})
@@ -147,7 +152,10 @@ with TestClient(create_app(), follow_redirects=False) as c:
 
     r = c.get("/dashboard")
     check("client appears on dashboard", "Legacy Maker Meats" in r.text)
-    check("dashboard warns about missing credentials", "until staging credentials are added" in r.text)
+    # The wording changed with migration 008: a client can be reachable by a
+    # browser sign-in OR an API key, so "credentials" is no longer one thing.
+    check("dashboard warns about missing credentials",
+          "until it can reach its staging instance" in r.text)
 
     print("\n== credentials ==")
     r = c.get(f"/clients/{cid}")

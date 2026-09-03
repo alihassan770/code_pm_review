@@ -1,7 +1,8 @@
-# Odoo PM Bot — project context
+# Odoo PM Agent — project context
 
 > Read this first, every session. It is the handover document.
-> Last updated: 2026-09-01, after verifying phases A–C.
+> Last updated: 2026-09-01, after the phase-D groundwork (projects, repos,
+> personas, branch guard, task views).
 
 ---
 
@@ -17,8 +18,9 @@ the parent overwrote this repo's `base.html` and `client_detail.html` and remove
 navigation link to the phase B pages, which were then unreachable despite working. If a
 change needs to exist in both places, make it twice by hand, or delete the parent copy.
 
-The running dev server currently starts from the **parent** copy, so it does *not* show the
-phase B/C pages. To run this one, create a venv here.
+The dev server now runs **from this repo** (`.venv/` here, `qa-gate serve`). The parent copy
+is inert and carries only a signpost file pointing here. Deleting it is safe and would remove
+the drift risk entirely — the only reason it survives is that nobody has said to.
 
 ---
 
@@ -94,17 +96,80 @@ throughout this file (§3, §7, §9…) point at it.
 
 | | Phase | State | Tests |
 |---|---|---|---|
-| **A** | App shell, login, clients | ✅ done | 41 |
+| **A** | App shell, login, clients | ✅ done | 42 |
 | **B** | Instance census + hygiene audit (UC-16) | ✅ done, **verified** | 52 |
 | **C** | Knowledge base from GitHub | ✅ done | 65 |
-| **D** | Static analysis + impact engine (doc phase 0) | ⬜ next | — |
+| **D** | Review engine: interpret → blast radius → plan → execute | 🟡 built, execute is read-only | — |
 | **E** | Probe module + instance contract (doc phase 1) | ⬜ | — |
-| **F** | Tiers 1–2, baseline, verdict, pause/resume (doc phase 2) | ⬜ | — |
-| **G** | Tier 3, evidence, cleanup (doc phase 3) | ⬜ | — |
-| **H** | AI scenario proposal + task interpretation (doc phase 4) | ⬜ | — |
+| **F** | Tiers 1–2, baseline, verdict, pause/resume (doc phase 2) | 🟡 pause/resume + verdict done | — |
+| **G** | Tier 3, evidence, cleanup (doc phase 3) | 🟡 screenshots done, no cleanup yet | — |
+| **H** | AI scenario proposal + task interpretation (doc phase 4) | ✅ done | — |
 | **I** | Blocking, 17/19 profiles, dashboard merge (doc phase 5) | ⬜ | — |
 
-**158 tests passing.** The user numbers phases from 1, so their "phase 1" is A, "phase 2"
+### The review engine (`review.py`, `browser.py`)
+
+Six phases, one `review_steps` row each, resumed by walking to the first that is
+not `done`:
+
+    interpret → blast_radius → plan → execute → verdict → summarise → report
+
+* **The summary is written back to the Odoo task** as an internal **log note**
+  headed `PM REVIEW SUMMARY`, followed by the summary text and nothing else.
+  The user asked for this on 2026-09-03, reversing the earlier "no write-back"
+  decision. The shape is what answers the original objection:
+  * `mail.mt_note`, never `mail.mt_comment` — a note reaches the Log note tab
+    and nobody is notified or emailed. A tool that mails a client on every run
+    gets switched off in a week.
+  * **No attachments**, and no argument exposes them. No links, no verdict
+    badge, no phase table — everything beyond the text is a decision about how
+    the record should read, and the record belongs to the people working the
+    task.
+  * Nothing else on the task is touched: no stage change, no field write.
+  * `review_runs.reported_at` guards against posting twice; a failure leaves it
+    NULL, the run still `done`, and the run page offers "Post it again". The
+    usual cause is the service account lacking write access on `project.task`,
+    and the error says so.
+  * `projects.post_note` falls back to `message_type='notification'` when a
+    version rejects `subtype_xmlid`; both land as notes. `tests/test_report.py`
+    (26 assertions) exercises both paths and asserts on what reached the fake
+    Odoo, not on what the code says it sent.
+* **Writing is gated on `database.is_neutralized`.** `fixtures.assert_writable`
+  refuses unless Odoo itself reports the database as neutralized — the flag Odoo
+  sets on staging/duplicate databases that disables outgoing mail and external
+  calls. Deliberately not a URL or name check: "staging" in a hostname is a
+  habit somebody gets wrong once; `is_neutralized` is the database's own
+  statement. Verified `true` on the Custom Tours instance.
+* **Every created record is ledgered before use** (`review_fixtures`), in
+  Postgres not memory, so a crash between create and cleanup still leaves a row
+  pointing at the orphan. `qa-gate leftovers` lists them; nothing deletes from a
+  client instance unattended.
+* **`FORBIDDEN_MODELS`** — res.users, res.groups, res.company, res.currency,
+  ir.cron, ir.config_parameter and friends can never be created by a review.
+* **Cleanup runs on pause and cancel too**, not just on completion — §7 says a
+  pause frees the database, and records left behind would be exactly the mess it
+  promises not to leave. Odoo refusing to unlink a posted entry is recorded
+  against the ledger row and surfaced, never swallowed.
+* **`execute` is read-only for assertions and enforced.** `_read()` checks every call against
+  `READ_ONLY_METHODS`; `create`/`write`/`unlink` raise `WriteAttempted`. An
+  assertion needing a record that does not exist returns **`blocked`**, which is
+  counted as neither pass nor fail. Creating fixtures is a separate act that
+  belongs behind the §3 audit.
+* **Phase model choice is measured.** `plan` runs on `deepseek-v4-flash`
+  (143–165s, ~144 tok/s) instead of `deepseek-v4-pro` (213–265s, ~60 tok/s);
+  quality checked, not assumed — full requirement coverage, regressions present,
+  zero forbidden models. Everything else stays on pro. **Do not "optimise" by
+  lowering `reasoning_effort`:** measured, `medium` was *slower* than `high` on
+  pro (301s vs 265s). Time tracks output volume, not reasoning depth.
+* **The verdict is arithmetic.** `compute_verdict` counts assertion outcomes and
+  contains no model call. `summarise` writes prose *about* it and is told not to
+  contradict it.
+* **Screenshots** come from Playwright with the persona's `session_id` cookie
+  injected — never by driving the login form, whose markup differs across 17/18/19.
+* **Ambiguities are answerable.** The run page offers a box per open question;
+  answering stores it, marks it authoritative in the prompt, and `replan()`
+  rebuilds from interpretation so the plan reflects the answer.
+
+**163 tests passing.** The user numbers phases from 1, so their "phase 1" is A, "phase 2"
 is B, "phase 3" is C.
 
 **Phases A–D write nothing to any client database.** Deliberate: a working app and real
@@ -150,6 +215,82 @@ Verified independently, not just by running its own suite:
 `github.py` `repo_sync.py` `knowledge.py` `coverage.py` `scenarios.py` · route `knowledge`
 · migration `003_phase_c.sql` (`client_repo_cache`).
 
+### Built after phase C — the groundwork phase D needs
+
+Not a numbered phase; this is the plumbing that had to exist before a review can
+be started on a task. All of it is live and covered by the suites.
+
+**`branches.py` — the write guard.** The rule: *read any branch, only ever create
+and commit under `staging`.* Refuses `main` `master` `prod` `production` `live`
+`release` `develop` `trunk` `stable` `default` in **any casing**, through
+`refs/heads/`, `origin/`, `refs/remotes/…`, plus prefix families (`release/2024.1`,
+`production/eu`, `hotfix/*`). Allowing is **by prefix, not by exclusion** — a
+branch is writable because it is ours, so an unfamiliar name is refused by default
+rather than accepted by omission. Tested against 26 dangerous names.
+
+> **A base branch is a read reference, and `main` is correct there.** I once made
+> `validate_base_branch` refuse protected names and phase C's tests caught it: the
+> base branch is where the code *lives* and what task branches are diffed against.
+> The write ban belongs at `assert_writable`, never at configuration.
+
+**`projects.py` — our Odoo, not the client's.** Rule of thumb for this codebase:
+`instance.py` / `census.py` / `audit.py` point at a *client's* Odoo; `projects.py`
+points at *ours*. Reads `project.project`, `project.task.type`, `project.task`,
+`ir.attachment`. Tasks are read live, never mirrored — a cached task list is wrong
+the moment a PM drags a card.
+
+**`repos.py` — several repositories per client**, each with its own base branch and
+`per_task`/`shared` mode. `clients.github` is kept as a **mirror of the primary
+repo** because phase C's `repo_sync` still reads that single column; anything new
+should use `repos.for_client()`, and the knowledge base should eventually walk
+every repo rather than just the first.
+
+**`personas.py` — browser logins for tier 3.** Real passwords, encrypted. Verified
+through `open_session()` (a web login), **not** `authenticate()` — an API key
+passes the second and fails the first, and finding that out mid-run as a flow that
+cannot log in is exactly what this check prevents.
+
+**`app_secrets.py` — two service credentials**, encrypted, verified before storing:
+`identity_rpc` (reads tasks; a nightly run has no signed-in person to borrow from)
+and `github_token` (private repos 404 identically to missing ones without it).
+
+**`html_clean.py` — allowlist sanitizer** for task descriptions. Arbitrary HTML
+injected into a page holding every client's staging credentials; "our staff wrote
+it" is not a security boundary. Unknown tags are dropped, not unwrapped. Images
+are **off by default** and return a dropped-count so the UI can say so.
+
+Migrations: `004_projects_repos_personas.sql` (project link, `client_repos`,
+`client_personas`, `app_secrets`) and `005_multi_project.sql` (`client_projects`,
+several projects per client, `db_name_pattern` default cleared).
+
+#### Decisions worth not re-litigating
+
+- **Several Odoo projects per client**, and the review stage is stored **by name**
+  on the client. `project.task.type` ids differ per project, so an id would force a
+  stage choice per project and make "everything waiting for review" the awkward
+  case instead of the default.
+- **`db_name_pattern` is optional and defaults to empty.** It is check 2 of §3 and
+  real defence in depth, but the old `%_staging` default is wrong for Odoo Online
+  (`company-main-1234567`) and silently failed the audit. Blank makes the audit
+  report that the check proves nothing — honest, one control weaker.
+- **App admin ≠ Odoo `base.group_system`.** The lead who runs the gate is often not
+  an Odoo sysadmin — ours is a *portal* user. Admin is granted by that group **or by
+  being the first user to sign in**, and is never removed by a later login.
+  `qa-gate grant-admin <login>` promotes anyone after that.
+- **The login page offers to adopt the credential** as the service account, ticked
+  by default, admin-only, only when none is set. Login is the one moment the app
+  legitimately holds a working credential, because it authenticates and discards it.
+
+#### Live Odoo facts (this deployment)
+
+- Identity Odoo `https://hsxtech.odoo.com`, db `hsxtech1-main-17222046`, **19.0+e**.
+- The operator account is a **portal** user: `base.group_user` is False. Tasks and
+  descriptions read fine; **`ir.attachment` is refused**, so attachments and inline
+  images need an Internal User account on the service credential. The code reports
+  that rather than rendering "no attachments", which would be a lie.
+- Project 116 = `P116 - Custom Tours - Odoo Implementation`, with stages including
+  **PM Review** (33) and **AI Code Review** (497).
+
 ### Phase D — next
 
 Python `ast` + `lxml` parsers, the §10 signal table, blast-radius selection, and the three
@@ -166,7 +307,13 @@ cheap static checks the plan says to ship in week one: missing `super()`, edited
 ./.venv/bin/qa-gate check     # config, Postgres, identity-Odoo reachability
 ./.venv/bin/qa-gate migrate   # apply pending migrations
 ./.venv/bin/qa-gate set-identity --url https://… --db …   # lockout escape hatch
+./.venv/bin/qa-gate grant-admin <login>       # app admin, not Odoo's group_system
+./.venv/bin/qa-gate audit <slug>…             # hygiene audit from the shell
+./.venv/bin/qa-gate knowledge <slug>…         # repo sync from the shell
 ```
+
+Configure, in this order: **/setup** (which Odoo) → sign in with *"also use this to
+read Odoo tasks"* ticked → **Settings → GitHub access** (token) → add a client.
 
 **Restart the server after every code change** — Jinja auto-reloads templates, Python
 changes are not picked up. The user tests in the browser immediately and will report a
@@ -179,7 +326,7 @@ Real PostgreSQL, real HTTP against fakes that reproduce the systems' actual rule
 
 ```bash
 createdb -U odoo odoo_qa_gate_test
-.venv/bin/python tests/test_phase_a.py     # 41
+.venv/bin/python tests/test_phase_a.py     # 42
 .venv/bin/python tests/test_phase_b.py     # 52
 .venv/bin/python tests/test_phase_c.py     # 65
 dropdb -U odoo odoo_qa_gate_test
@@ -202,7 +349,7 @@ you will chase phantom failures.
 | Docker | **Not used anywhere** |
 | Browser automation | **Playwright**, not Hoot |
 | Tier 3 credentials | **Real passwords** for QA persona users, not API keys |
-| Product name | **Odoo PM Bot** (UI). Package/CLI are still `qa_gate` / `qa-gate` |
+| Product name | **Odoo PM Agent** (UI). Package/CLI are still `qa_gate` / `qa-gate` |
 
 The plan's §19 still specifies Express/TypeScript for the control plane, chosen because
 `hst-pmo-dashboard` uses that stack. **We overrode it**: the runner must be Python regardless

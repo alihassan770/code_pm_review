@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Settings · Odoo PM Agent{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl">
+  <h1 class="text-[1.35rem] font-semibold tracking-tight">Settings</h1>
+  <p class="mt-1 text-sm text-slate-500">How this app reaches your own Odoo.</p>
+
+  {% if ok %}
+  <div class="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] text-emerald-900">
+    {{ ok }}{% if projects_seen is not none %} It can see {{ projects_seen }} project{{ '' if projects_seen == 1 else 's' }}.{% endif %}
+  </div>
+  {% endif %}
+  {% if error %}
+  <div class="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-800">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <div class="card mt-6 p-5">
+    <h2 class="text-[15px] font-semibold">Odoo connection</h2>
+    <dl class="mt-3 grid grid-cols-3 gap-x-6 gap-y-2 text-sm">
+      <dt class="text-slate-500">URL</dt>
+      <dd class="col-span-2 font-mono text-[13px] break-all">{{ cfg.odoo.url or '—' }}</dd>
+      <dt class="text-slate-500">Database</dt>
+      <dd class="col-span-2 font-mono text-[13px]">{{ cfg.odoo.db or '—' }}</dd>
+    </dl>
+    <a href="/setup" class="mt-3 inline-block text-[13px] font-medium text-brand-600
+       underline underline-offset-2 hover:text-brand-700">Change the connection</a>
+  </div>
+
+  <div class="card mt-5 p-5">
+    <h2 class="text-[15px] font-semibold">Service credential</h2>
+    <p class="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+      Used to read <span class="font-mono">project.task</span> and, later, to write chatter
+      back. It exists because a nightly run has no signed-in person to borrow credentials
+      from — and storing every staff member's password to avoid it would be a far worse trade.
+    </p>
+
+    {% if service_configured %}
+    <p class="mt-3 inline-flex items-center gap-1.5 rounded-md border border-emerald-200
+              bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800">
+      <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z" clip-rule="evenodd"/>
+      </svg>
+      Stored for {{ service_login }}
+    </p>
+    {% endif %}
+
+    <form method="post" action="/settings/service-credential" class="mt-4 space-y-4">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div>
+        <label for="login" class="label">Odoo login</label>
+        <input id="login" name="login" type="text" autocomplete="off"
+               value="{{ service_login }}" placeholder="bot@yourcompany.com"
+               class="field font-mono text-[13px]">
+      </div>
+      <div>
+        <label for="secret" class="label">API key</label>
+        <input id="secret" name="secret" type="password" autocomplete="off"
+               class="field font-mono text-[13px]">
+        <p class="mt-1.5 text-xs leading-relaxed text-slate-500">
+          An API key, not a password — Odoo requires one for RPC when the account has
+          two-factor enabled, and it can be revoked without disturbing a password a human
+          also uses. Verified against Odoo before it is stored, and encrypted at rest.
+        </p>
+      </div>
+      <button type="submit" class="btn-primary">Verify and store</button>
+    </form>
+  </div>
+
+  <div class="card mt-5 p-5">
+    <h2 class="text-[15px] font-semibold">GitHub access</h2>
+    <p class="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+      Reads each client's repositories to build the knowledge base — the module list,
+      <span class="font-mono text-[12px]">qa/knowledge.yml</span> and
+      <span class="font-mono text-[12px]">qa/scenarios/</span>. Read-only; this app never
+      pushes to a client repo.
+    </p>
+    <p class="mt-2 text-[12.5px] leading-relaxed text-slate-500">
+      <b class="text-slate-700">Private repositories need this.</b> GitHub answers an
+      unauthenticated request for a private repo with the same 404 it gives for one that
+      does not exist, so without a token a private repo looks exactly like a typo.
+    </p>
+
+    {% if github_configured %}
+    <p class="mt-3 inline-flex items-center gap-1.5 rounded-md border border-emerald-200
+              bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800">
+      <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
+        d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z"
+        clip-rule="evenodd"/></svg>
+      Verified as {{ github_login }}
+    </p>
+    {% endif %}
+
+    <form method="post" action="/settings/github-token" class="mt-4 space-y-4">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div>
+        <label for="token" class="label">Personal access token</label>
+        <input id="token" name="token" type="password" autocomplete="off"
+               placeholder="github_pat_… or ghp_…" class="field font-mono text-[13px]">
+        <p class="mt-1.5 text-xs leading-relaxed text-slate-500">
+          Create one at <span class="font-mono">github.com/settings/tokens</span>. A classic
+          token needs the <span class="font-mono">repo</span> scope; a fine-grained token
+          needs <b>Contents: read-only</b> on the repositories, and for an organisation like
+          HSxTech the org must have approved it. Verified against GitHub before it is stored,
+          and encrypted at rest.
+        </p>
+      </div>
+      <button type="submit" class="btn-primary">Verify and store</button>
+    </form>
+  </div>
+
+  {# The AI provider. Deliberately last: it is the only credential here that is
+     not required for the gate to work, because nothing on the verdict path is
+     allowed to depend on it. #}
+  <div class="card p-6">
+    <h2 class="text-[15px] font-semibold">AI provider</h2>
+    <p class="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+      Used to read addon source and propose what each module does, and later to turn a
+      task description into checkable assertions. It never decides whether a review
+      passes — that is computed from assertion results, and a model's opinion is not one.
+    </p>
+
+    {% if deepseek_configured %}
+    <p class="mt-3 inline-flex items-center gap-1.5 rounded-md border border-emerald-200
+              bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800">
+      <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
+        d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z"
+        clip-rule="evenodd"/></svg>
+      Key stored, ending ••••{{ deepseek_hint }}
+    </p>
+    {% endif %}
+
+    <form method="post" action="/settings/deepseek-key" class="mt-4 space-y-4">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div>
+        <label for="api_key" class="label">DeepSeek API key</label>
+        <input id="api_key" name="api_key" type="password" autocomplete="off"
+               placeholder="sk-…" class="field font-mono text-[13px]">
+        <p class="mt-1.5 text-xs leading-relaxed text-slate-500">
+          Create one at <span class="font-mono">platform.deepseek.com</span>. Verified
+          against the provider before it is stored, encrypted at rest with the same key as
+          every other credential here, and never rendered back into a page — only the last
+          four characters are kept in the clear, so you can tell two keys apart when
+          rotating one. Digests run on
+          <span class="font-mono">{{ deepseek_model }}</span> with reasoning enabled.
+        </p>
+      </div>
+      <button type="submit" class="btn-primary">
+        {{ 'Replace key' if deepseek_configured else 'Verify and store' }}
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}

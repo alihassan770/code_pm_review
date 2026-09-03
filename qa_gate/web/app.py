@@ -18,10 +18,13 @@ from fastapi.templating import Jinja2Templates
 from .. import config as config_mod
 from .. import db, paths, sessions
 from .routes import audit as audit_routes
+from .routes import tasks as task_routes
 from .routes import auth as auth_routes
 from .routes import clients as client_routes
 from .routes import dashboard as dashboard_routes
 from .routes import knowledge as knowledge_routes
+from .routes import runs as run_routes
+from .routes import settings as settings_routes
 from .routes import setup as setup_routes
 
 log = logging.getLogger(__name__)
@@ -53,14 +56,17 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Odoo PM Bot", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Odoo PM Agent", lifespan=lifespan, docs_url=None, redoc_url=None)
 
     app.include_router(setup_routes.router)
     app.include_router(auth_routes.router)
     app.include_router(dashboard_routes.router)
     app.include_router(client_routes.router)
     app.include_router(audit_routes.router)
+    app.include_router(task_routes.router)
+    app.include_router(settings_routes.router)
     app.include_router(knowledge_routes.router)
+    app.include_router(run_routes.router)
 
     @app.exception_handler(404)
     async def not_found(request: Request, exc):  # noqa: ANN001

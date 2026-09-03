@@ -11,9 +11,13 @@ import re
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
-from ... import clients as clients_mod
-from ...clients import BRANCH_MODES, HOSTING_PLATFORMS, ODOO_VERSIONS, ClientError
+from ... import app_secrets, clients as clients_mod, personas, projects, repos as repos_mod
+from ...clients import HOSTING_PLATFORMS, ODOO_VERSIONS, ClientError
+from ...repos import BRANCH_MODES, RepoError
+from ...personas import PersonaError
+from ...projects import NotConfigured
 from ...odoo_client import OdooAuthError, OdooClient, OdooError
 from .. import deps
 
@@ -24,17 +28,179 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,48}$")
 GITHUB_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
-def _form_context(**overrides) -> dict:
+def _form_context(request, **overrides) -> dict:
     ctx = {
         "platforms": HOSTING_PLATFORMS,
         "versions": ODOO_VERSIONS,
         "branch_modes": BRANCH_MODES,
-        "error": None,
-        "client": None,
-        "values": {},
+        "error": None, "lookup_error": None,
+        "client": None, "values": {}, "repos": None,
+        "client_projects": None, "stage_names": [], "stage_counts": {},
+        "task_preview": [], "preview_stage": "",
+        "persona_saved": False,
+        "service_configured": app_secrets.is_configured(app_secrets.IDENTITY_RPC),
+        "all_projects": [], "projects_error": "",
     }
     ctx.update(overrides)
+    if not ctx["all_projects"]:
+        ctx["all_projects"], ctx["projects_error"] = _project_choices(request)
     return ctx
+
+
+#: Every active project, not a page of them. At ~126 projects this is a few
+#: kilobytes of HTML and the filter can then be instant and client-side; paging
+#: it would trade that for a round trip per keystroke to solve a problem this
+#: installation does not have.
+MAX_PROJECT_CHOICES = 400
+
+
+def _project_choices(request) -> tuple[list, str]:
+    """The projects a person can pick from, or why there are none.
+
+    Offered as a list because asking someone to type an id means asking them to
+    go and find it in another tab first. The id stays acceptable — a project
+    that is archived, or newer than this page, still has to be reachable — but
+    it is no longer the only way in.
+    """
+    if not app_secrets.is_configured(app_secrets.IDENTITY_RPC):
+        return [], ("No Odoo service credential is set, so the project list cannot "
+                    "be loaded. You can still enter ids by hand.")
+    try:
+        found = projects.connect(request.app.state.config).search_projects(
+            "", limit=MAX_PROJECT_CHOICES)
+    except NotConfigured as exc:
+        return [], str(exc)
+    except (OdooAuthError, OdooError) as exc:
+        return [], f"The project list could not be read from Odoo: {exc}"
+    return found, ""
+
+
+def _project_rows(form) -> list[dict]:
+    """Just the ids. The name is looked up, never submitted."""
+    return [{"odoo_project_id": raw.strip()}
+            for raw in form.getlist("project_id") if (raw or "").strip()]
+
+
+def _lookup_projects(request, ctx: dict, rows: list[dict],
+                     stage_name: str = "") -> None:
+    """Resolve each project id, collect the stages they share, and preview tasks.
+
+    Stages are gathered by NAME across every project, because ids differ per
+    project — that is what makes one stage setting mean the same thing for a
+    client with three projects.
+
+    The project name is read here rather than typed: an id identifies a project,
+    so asking a person to also write its name is asking them to keep a copy in
+    sync by hand.
+
+    A failure is never fatal to the form. Someone should be able to record a
+    client while Odoo is unreachable and fill in the detail later.
+    """
+    if not rows:
+        return
+    try:
+        identity = projects.connect(request.app.state.config)
+    except NotConfigured as exc:
+        ctx["lookup_error"] = str(exc)
+        return
+
+    resolved, counts, missing, preview = [], {}, [], []
+    for r in rows:
+        raw = str(r.get("odoo_project_id") or "").strip()
+        if not raw.isdigit():
+            missing.append(f"{raw!r} is not a numeric id")
+            continue
+        pid = int(raw)
+        try:
+            project = identity.project(pid)
+            if not project:
+                missing.append(f"no project with id {pid}")
+                continue
+            resolved.append({"odoo_project_id": pid, "odoo_project_name": project.name})
+
+            stages = identity.stages(pid)
+            by_id = identity.task_counts_by_stage(pid)
+            for st in stages:
+                counts[st.name] = counts.get(st.name, 0) + by_id.get(st.id, 0)
+
+            # Show what the setting will actually select. A stage name and a
+            # count are abstract; the task titles are the thing being claimed.
+            if stage_name:
+                stage_id = next((st.id for st in stages if st.name == stage_name), None)
+                if stage_id is not None:
+                    for t in identity.tasks(pid, stage_id=stage_id):
+                        preview.append((project.name, t))
+        except OdooError as exc:
+            missing.append(f"#{pid}: {exc}")
+
+    ctx["client_projects"] = resolved or None
+    ctx["stage_counts"] = counts
+    ctx["stage_names"] = sorted(counts, key=lambda n: (-counts[n], n))
+    ctx["task_preview"] = preview
+    ctx["preview_stage"] = stage_name
+    if missing:
+        ctx["lookup_error"] = "; ".join(missing)
+
+
+def _repo_rows(form) -> list[dict]:
+    """The repeated repository fields, zipped back into rows."""
+    gh = form.getlist("repo_github")
+    base = form.getlist("repo_base_branch")
+    mode = form.getlist("repo_branch_mode")
+    rows = []
+    for i, g in enumerate(gh):
+        if not (g or "").strip():
+            continue
+        rows.append({
+            "github": g,
+            "base_branch": base[i] if i < len(base) else "staging",
+            "branch_mode": mode[i] if i < len(mode) else "per_task",
+        })
+    return rows
+
+
+def _check_repo_rows(form) -> str | None:
+    """Validate repository rows before anything is written.
+
+    Order matters here. Repositories are saved after the client row exists, so
+    validating them afterwards would leave a half-made client behind every
+    typo — and the slug is unique, so the retry then fails for a second,
+    unrelated reason. Check first, write once.
+    """
+    try:
+        for row in _repo_rows(form):
+            repos_mod.normalize_github(row["github"])
+            repos_mod.validate_base_branch(row["base_branch"])
+    except RepoError as exc:
+        return str(exc)
+    return None
+
+
+def _save_related(client_id: int, form, ctx: dict, *, secret_key: str,
+                  user_id: int) -> str | None:
+    """Repositories, project link and browser persona. Returns an error or None."""
+    try:
+        repos_mod.replace_all(client_id, _repo_rows(form))
+    except RepoError as exc:
+        return str(exc)
+
+    rows = ctx.get("client_projects") or _project_rows(form)
+    try:
+        clients_mod.set_projects(client_id, rows,
+                                 stage_name=(form.get("task_stage_name") or "").strip())
+    except ClientError as exc:
+        return str(exc)
+
+    login = (form.get("persona_login") or "").strip()
+    password = form.get("persona_password") or ""
+    if login:
+        try:
+            personas.save(client_id, key="primary", label="Primary browser user",
+                          login=login, password=password, secret_key=secret_key,
+                          updated_by=user_id)
+        except PersonaError as exc:
+            return str(exc)
+    return None
 
 
 @router.get("/clients")
@@ -54,7 +220,7 @@ def new_client(request: Request):
         deps.require_session(request)
     except deps.NotLoggedIn:
         return deps.login_redirect(request)
-    return deps.render(request, "client_form.html", _form_context())
+    return deps.render(request, "client_form.html", _form_context(request))
 
 
 @router.post("/clients/new")
@@ -63,21 +229,42 @@ async def create_client(request: Request):
         session = deps.require_session(request)
     except deps.NotLoggedIn:
         return deps.login_redirect(request)
-    form = dict(await request.form())
+    form = await request.form()
     deps.verify_csrf(session, form.get("csrf_token"))
+
+    values = {k: v for k, v in form.items()}
+    ctx = _form_context(request, values=values, repos=_repo_rows(form) or None)
+    _lookup_projects(request, ctx, _project_rows(form),
+                     (form.get("task_stage_name") or "").strip())
+
+    # "Look up" re-renders with the project resolved rather than saving, so the
+    # stage list can be chosen from before committing to anything.
+    if form.get("action") == "lookup":
+        return deps.render(request, "client_form.html", ctx)
 
     slug = (form.get("slug") or "").strip().lower()
     name = (form.get("name") or "").strip()
-    error = _validate(slug, name, form)
+    error = _validate(slug, name, form) or _check_repo_rows(form)
     if error:
-        return deps.render(request, "client_form.html",
-                           _form_context(error=error, values=form))
+        ctx["error"] = error
+        return deps.render(request, "client_form.html", ctx)
     try:
         client = clients_mod.create(
             slug=slug, name=name, created_by=session.user.id, **_fields(form))
     except ClientError as exc:
-        return deps.render(request, "client_form.html",
-                           _form_context(error=str(exc), values=form))
+        ctx["error"] = str(exc)
+        return deps.render(request, "client_form.html", ctx)
+
+    cfg = request.app.state.config
+    related_error = _save_related(client.id, form, ctx,
+                                  secret_key=cfg.secret_key, user_id=session.user.id)
+    if related_error:
+        # The client exists; only the extras failed. Say so rather than implying
+        # nothing was saved, and land them on the edit form to finish.
+        ctx.update(client=clients_mod.get(client.id),
+                   error=f"Client created, but: {related_error}")
+        return deps.render(request, "client_form.html", ctx)
+
     log.info("Client created: %s by %s", client.slug, session.user.login)
     return RedirectResponse(f"/clients/{client.id}", status_code=303)
 
@@ -92,7 +279,12 @@ def client_detail(request: Request, client_id: int):
     if not client:
         return deps.render(request, "error.html",
                            {"code": 404, "message": "No such client."}, status_code=404)
-    return deps.render(request, "client_detail.html", {"client": client})
+    return deps.render(request, "client_detail.html", {
+        "client": client,
+        "client_projects": clients_mod.projects_for(client.id),
+        "repos": repos_mod.for_client(client.id),
+        "client_personas": personas.for_client(client.id),
+    })
 
 
 @router.get("/clients/{client_id}/edit")
@@ -105,8 +297,20 @@ def edit_client(request: Request, client_id: int):
     if not client:
         return deps.render(request, "error.html",
                            {"code": 404, "message": "No such client."}, status_code=404)
-    return deps.render(request, "client_form.html",
-                       _form_context(client=client, values=client.__dict__))
+    ctx = _form_context(request, client=client, values=dict(client.__dict__),
+                        repos=[r.__dict__ for r in repos_mod.for_client(client.id)] or None,
+                        persona_saved=any(p.key == "primary"
+                                          for p in personas.for_client(client.id)))
+    ctx["values"]["task_stage_name"] = client.task_stage_name
+    existing = personas.for_client(client.id)
+    primary = next((p for p in existing if p.key == "primary"), None)
+    if primary:
+        ctx["values"]["persona_login"] = primary.login
+    _lookup_projects(request, ctx,
+                     [{"odoo_project_id": str(cp.odoo_project_id)}
+                      for cp in clients_mod.projects_for(client.id)],
+                     client.task_stage_name)
+    return deps.render(request, "client_form.html", ctx)
 
 
 @router.post("/clients/{client_id}/edit")
@@ -119,16 +323,34 @@ async def update_client(request: Request, client_id: int):
     if not client:
         return deps.render(request, "error.html",
                            {"code": 404, "message": "No such client."}, status_code=404)
-    form = dict(await request.form())
+    form = await request.form()
     deps.verify_csrf(session, form.get("csrf_token"))
 
+    values = {k: v for k, v in form.items()}
+    ctx = _form_context(request, client=client, values=values,
+                        repos=_repo_rows(form) or None,
+                        persona_saved=any(p.key == "primary"
+                                          for p in personas.for_client(client_id)))
+    _lookup_projects(request, ctx, _project_rows(form),
+                     (form.get("task_stage_name") or "").strip())
+
+    if form.get("action") == "lookup":
+        return deps.render(request, "client_form.html", ctx)
+
     name = (form.get("name") or "").strip()
-    error = _validate(client.slug, name, form, slug_required=False)
+    error = _validate(client.slug, name, form, slug_required=False) or _check_repo_rows(form)
     if error:
-        return deps.render(request, "client_form.html",
-                           _form_context(client=client, error=error, values=form))
+        ctx["error"] = error
+        return deps.render(request, "client_form.html", ctx)
+
     clients_mod.update(client_id, name=name,
                        active=form.get("active") == "on", **_fields(form))
+    cfg = request.app.state.config
+    related_error = _save_related(client_id, form, ctx,
+                                  secret_key=cfg.secret_key, user_id=session.user.id)
+    if related_error:
+        ctx.update(client=clients_mod.get(client_id), error=related_error)
+        return deps.render(request, "client_form.html", ctx)
     return RedirectResponse(f"/clients/{client_id}", status_code=303)
 
 
@@ -156,8 +378,12 @@ async def save_credentials(request: Request, client_id: int):
     api_key = (form.get("rpc_api_key") or "").strip()
 
     def fail(message: str):
-        return deps.render(request, "client_detail.html",
-                           {"client": client, "cred_error": message}, status_code=200)
+        return deps.render(request, "client_detail.html", {
+            "client": client, "cred_error": message,
+            "client_projects": clients_mod.projects_for(client.id),
+            "repos": repos_mod.for_client(client.id),
+            "client_personas": personas.for_client(client.id),
+        }, status_code=200)
 
     if not client.staging_url or not client.staging_db:
         return fail("Set the staging URL and database name before adding credentials.")
@@ -184,6 +410,82 @@ async def save_credentials(request: Request, client_id: int):
     return RedirectResponse(f"/clients/{client_id}", status_code=303)
 
 
+@router.post("/clients/{client_id}/access-mode")
+async def set_access_mode(request: Request, client_id: int):
+    """Choose browser sign-in or API key for this client.
+
+    Stored rather than inferred, so `instance.connect` honours a choice instead
+    of falling back between the two. A silent fallback would let a revoked API
+    key look like a healthy instance reached as a different user, and the audit
+    would then attribute its findings to the wrong account.
+    """
+    try:
+        session = deps.require_session(request)
+    except deps.NotLoggedIn:
+        return deps.login_redirect(request)
+    client = clients_mod.get(client_id)
+    if not client:
+        return deps.render(request, "error.html",
+                           {"code": 404, "message": "No such client."}, status_code=404)
+    form = dict(await request.form())
+    deps.verify_csrf(session, form.get("csrf_token"))
+
+    mode = (form.get("access_mode") or "").strip()
+    if mode not in ("browser", "api_key"):
+        # The column carries a CHECK constraint; refusing here keeps the failure
+        # a redirect rather than a 500 from Postgres.
+        return RedirectResponse(f"/clients/{client_id}", status_code=303)
+
+    clients_mod.set_access_mode(client_id, mode)
+    log.info("Access mode for %s set to %s by %s", client.slug, mode, session.user.login)
+    return RedirectResponse(f"/clients/{client_id}", status_code=303)
+
+
+@router.post("/clients/{client_id}/personas/{persona_id}/verify")
+async def verify_persona(request: Request, client_id: int, persona_id: int):
+    """Prove one browser login can actually open a web session.
+
+    A persona is stored without being checked, because the password is typed on
+    the same form as several others and failing the whole save over one of them
+    would be worse than saving them all and checking after. That trade only
+    works if the check is reachable, though — and until now it was not: the
+    badge on the client page said "Not verified yet" and there was nothing
+    anywhere that could ever change it.
+
+    `personas.verify` uses `open_session`, not `authenticate`, because an Odoo
+    API key passes the second and fails the first. Discovering that mid-run, as
+    a screenshot flow that cannot log in, is exactly what this prevents.
+    """
+    try:
+        session = deps.require_session(request)
+    except deps.NotLoggedIn:
+        return deps.login_redirect(request)
+    client = clients_mod.get(client_id)
+    if not client:
+        return deps.render(request, "error.html",
+                           {"code": 404, "message": "No such client."}, status_code=404)
+    form = dict(await request.form())
+    deps.verify_csrf(session, form.get("csrf_token"))
+
+    cfg = request.app.state.config
+    try:
+        # Reaching a client's Odoo is network I/O and can be slow; off the event
+        # loop so one unreachable instance does not stall every other request.
+        persona = await run_in_threadpool(
+            personas.verify, persona_id, client, cfg.secret_key)
+    except PersonaError as exc:
+        return deps.render(request, "client_detail.html", {
+            "client": client, "cred_error": str(exc),
+            "client_projects": clients_mod.projects_for(client.id),
+            "repos": repos_mod.for_client(client.id),
+            "client_personas": personas.for_client(client.id),
+        }, status_code=200)
+
+    log.info("Persona %s for %s verified by %s: %s", persona.key, client.slug,
+             session.user.login, persona.state)
+    return RedirectResponse(f"/clients/{client_id}", status_code=303)
+
+
 # ---- validation ------------------------------------------------------------
 
 def _validate(slug: str, name: str, form: dict, *, slug_required: bool = True) -> str | None:
@@ -192,9 +494,6 @@ def _validate(slug: str, name: str, form: dict, *, slug_required: bool = True) -
                 "2 to 49 characters.")
     if not name:
         return "Name is required."
-    github = (form.get("github") or "").strip()
-    if github and not GITHUB_RE.match(github):
-        return "GitHub must be in owner/name form, e.g. hsxtech/legacymakermeats."
     url = (form.get("staging_url") or "").strip()
     if url and not url.startswith(("http://", "https://")):
         return "Staging URL must start with http:// or https://"
@@ -203,7 +502,6 @@ def _validate(slug: str, name: str, form: dict, *, slug_required: bool = True) -
 
 def _fields(form: dict) -> dict:
     return {
-        "github": form.get("github", ""),
         "odoo_version": form.get("odoo_version", "17.0"),
         "hosting_platform": form.get("hosting_platform", "other"),
         "staging_url": form.get("staging_url", ""),

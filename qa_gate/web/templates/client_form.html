@@ -1,116 +1,593 @@
 {% extends "base.html" %}
 {% set editing = client is not none %}
-{% block title %}{{ 'Edit' if editing else 'Add' }} client · Odoo PM Bot{% endblock %}
+{% block title %}{{ 'Edit' if editing else 'Add' }} client · Odoo PM Agent{% endblock %}
 
 {% macro field(label, name, value, placeholder='', mono=false, help='') %}
 <div>
-  <label for="{{ name }}" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
-    {{ label }}
-  </label>
+  <label for="{{ name }}" class="label">{{ label }}</label>
   <input id="{{ name }}" name="{{ name }}" type="text" value="{{ value or '' }}"
-         placeholder="{{ placeholder }}"
-         class="field {{ 'font-mono text-[13px]' if mono }}">
-  {% if help %}<p class="mt-1 text-xs text-slate-500">{{ help }}</p>{% endif %}
+         placeholder="{{ placeholder }}" class="field {{ 'font-mono text-[13px]' if mono }}">
+  {% if help %}<p class="mt-1.5 text-xs leading-relaxed text-slate-500">{{ help }}</p>{% endif %}
 </div>
 {% endmacro %}
 
+{% macro section(num, title, blurb) %}
+<div class="flex items-baseline gap-3">
+  <span class="grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-brand-100
+               text-[11px] font-bold text-brand-700">{{ num }}</span>
+  <div>
+    <h2 class="text-[15px] font-semibold tracking-tight text-slate-900">{{ title }}</h2>
+    <p class="mt-0.5 text-[13px] leading-relaxed text-slate-500">{{ blurb }}</p>
+  </div>
+</div>
+{% endmacro %}
+
+{% block head_extra %}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // --- handle derives from the name until edited by hand -------------------
+    var name = document.getElementById('name');
+    var slug = document.getElementById('slug');
+    var echo = document.getElementById('slug-echo');
+    if (name && slug) {
+      var touched = slug.value.trim() !== '';
+      var paint = function () { if (echo) echo.textContent = slug.value.trim() || 'yourproject'; };
+      slug.addEventListener('input', function () { touched = true; paint(); });
+      name.addEventListener('input', function () {
+        if (!touched) {
+          slug.value = name.value.toLowerCase().normalize('NFKD')
+                         .replace(/[^a-z0-9]+/g, '').slice(0, 49);
+          paint();
+        }
+      });
+      paint();
+    }
+
+    // --- repository rows -----------------------------------------------------
+    // Plain cloning rather than a framework: one <template>, one button, and the
+    // server reads repeated field names. Nothing to hydrate, nothing to break.
+    // --- project rows --------------------------------------------------------
+    var projList = document.getElementById('project-rows');
+    var projTpl  = document.getElementById('project-template');
+    var addProj  = document.getElementById('add-project');
+    if (projList && projTpl && addProj) {
+      addProj.addEventListener('click', function () {
+        projList.appendChild(projTpl.content.cloneNode(true));
+      });
+      projList.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-remove-row]');
+        if (!btn) return;
+        if (projList.querySelectorAll('[data-project-row]').length > 1) {
+          btn.closest('[data-project-row]').remove();
+        } else {
+          btn.closest('[data-project-row]').querySelectorAll('input')
+             .forEach(function (i) { i.value = ''; });
+        }
+      });
+    }
+
+    var repoList = document.getElementById('repo-rows');
+    var repoTpl  = document.getElementById('repo-template');
+    var addRepo  = document.getElementById('add-repo');
+    if (repoList && repoTpl && addRepo) {
+      addRepo.addEventListener('click', function () {
+        repoList.appendChild(repoTpl.content.cloneNode(true));
+      });
+      repoList.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-remove-row]');
+        if (!btn) return;
+        var rows = repoList.querySelectorAll('[data-repo-row]');
+        if (rows.length > 1) btn.closest('[data-repo-row]').remove();
+        else {
+          btn.closest('[data-repo-row]').querySelectorAll('input').forEach(function (i) {
+            i.value = '';
+          });
+        }
+      });
+    }
+
+    // The project picker. Filtering is client-side because the whole list is
+    // already on the page — a round trip per keystroke would make it slower for
+    // no benefit at this size.
+    (function () {
+      var filter = document.getElementById('project-filter');
+      var list   = document.getElementById('project-list');
+      if (!filter || !list) return;
+      var options = Array.prototype.slice.call(
+        list.querySelectorAll('[data-project-option]'));
+      var empty  = document.getElementById('project-empty');
+      var count  = document.getElementById('project-count');
+
+      function recount() {
+        if (!count) return;
+        count.textContent = list.querySelectorAll('input[type=checkbox]:checked').length;
+      }
+
+      function apply() {
+        // Every word must appear somewhere, in any order, so "tours custom"
+        // finds "Custom Tours" — typing the words you remember in the order you
+        // remember them should not be a way to get no results.
+        var terms = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+        var shown = 0;
+        options.forEach(function (opt) {
+          // A checked project always stays visible: filtering it out of sight
+          // would look exactly like unselecting it.
+          var checked = opt.querySelector('input').checked;
+          var hay = opt.dataset.search;
+          var hit = checked || terms.every(function (t) {
+            return hay.indexOf(t) !== -1;
+          });
+          opt.classList.toggle('hidden', !hit);
+          if (hit) shown++;
+        });
+        if (empty) empty.classList.toggle('hidden', shown !== 0);
+      }
+
+      // `input` rather than `keyup`: it also fires for paste, autofill, and
+      // clearing the field with the search box's own × button.
+      filter.addEventListener('input', apply);
+
+      list.addEventListener('change', recount);
+      recount();
+    })();
+  });
+
+</script>
+{% endblock %}
+
 {% block content %}
-<div class="max-w-2xl">
-  <h1 class="text-xl font-semibold tracking-tight">
+<div class="max-w-3xl">
+  {# A way out at the top, matching every other page. There is a Cancel link at
+     the bottom of the form too, but this form is long enough that "how do I get
+     out of here" should not require scrolling past all of it first. #}
+  <a href="{{ '/clients/%d'|format(client.id) if editing else '/clients' }}"
+     class="mb-4 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[13px]
+            font-medium text-brand-600 hover:bg-brand-50 hover:text-brand-700">
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 18l-6-6 6-6"/>
+    </svg>
+    {{ 'Back to ' ~ client.name if editing else 'Back to clients' }}
+  </a>
+
+  <h1 class="text-[1.35rem] font-semibold tracking-tight">
     {{ 'Edit ' + client.name if editing else 'Add a client' }}
   </h1>
+  <p class="mt-1 text-sm text-slate-500">
+    Everything the gate needs to read a client's work, find its code, and reach its
+    staging instance.
+  </p>
 
   {% if error %}
-  <div class="mt-5 rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
-    {{ error }}
+  <div class="mt-5 flex gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+    <svg class="mt-0.5 h-4 w-4 shrink-0 text-rose-500" viewBox="0 0 20 20" fill="currentColor">
+      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/>
+    </svg>
+    <p class="text-[13px] leading-relaxed text-rose-800">{{ error }}</p>
   </div>
   {% endif %}
 
   <form method="post"
         action="{{ '/clients/%d/edit'|format(client.id) if editing else '/clients/new' }}"
-        class="mt-6 space-y-5">
+        class="mt-8 space-y-10">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-    {% if not editing %}
-      {{ field('Slug', 'slug', values.get('slug'), 'legacymakermeats', true,
-               'Lowercase identifier. Cannot be changed later.') }}
-    {% endif %}
-    {{ field('Name', 'name', values.get('name'), 'Legacy Maker Meats') }}
-    {{ field('GitHub repo', 'github', values.get('github'), 'hsxtech/legacymakermeats', true,
-             'owner/name. This is how a local checkout is matched — not the slug.') }}
-
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label for="odoo_version" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
-          Odoo version
-        </label>
-        <select id="odoo_version" name="odoo_version"
-                class="field">
-          {% for v in versions %}
-          <option value="{{ v }}" {{ 'selected' if values.get('odoo_version') == v }}>{{ v }}</option>
-          {% endfor %}
-        </select>
+    <!-- 1 ─────────────────────────────────────────────── identity -->
+    <section class="space-y-4">
+      {{ section(1, 'Identity', 'How this client is named here and on the command line.') }}
+      <div class="card space-y-5 p-5">
+        {{ field('Name', 'name', values.get('name'), 'Your Project', false,
+                 'How the client is shown everywhere in this app. Change it whenever you like.') }}
+        {% if not editing %}
+        <div>
+          <label for="slug" class="label">Short handle</label>
+          <input id="slug" name="slug" type="text" value="{{ values.get('slug') or '' }}"
+                 placeholder="yourproject" class="field font-mono text-[13px]">
+          <p class="mt-1.5 text-xs leading-relaxed text-slate-500">
+            Filled in from the name — edit it if you want something shorter. It is what you
+            type on the command line:
+            <span class="mt-1 block font-mono text-[11.5px] text-slate-600">
+              qa-gate audit <span class="text-brand-600" id="slug-echo">yourproject</span>
+            </span>
+            It also tags every log line and <b>cannot be changed later</b>, so it stays
+            stable when the name doesn't.
+          </p>
+        </div>
+        {% endif %}
       </div>
-      <div>
-        <label for="hosting_platform" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
-          Hosting
-        </label>
-        <select id="hosting_platform" name="hosting_platform"
-                class="field">
-          {% for key, label in platforms %}
-          <option value="{{ key }}" {{ 'selected' if values.get('hosting_platform') == key }}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </div>
+    </section>
 
-    <hr class="border-slate-200">
-    <p class="text-xs uppercase tracking-wider text-slate-500">Staging instance</p>
+    <!-- 2 ──────────────────────────────────────── Odoo project + tasks -->
+    <section class="space-y-4">
+      {{ section(2, 'Odoo project',
+                 'Which project holds this client’s tasks, and which stage queues them for
+                  review. Read from your own Odoo, not the client’s staging instance.') }}
+      <div class="card space-y-5 p-5">
+        {% if not service_configured %}
+        <div class="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5">
+          <svg class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M8.3 3.3a2 2 0 013.4 0l6 10.4A2 2 0 0116 16.8H4a2 2 0 01-1.7-3.1l6-10.4zM10 7a1 1 0 011 1v3a1 1 0 11-2 0V8a1 1 0 011-1zm0 7.5a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+          </svg>
+          <p class="text-[12.5px] leading-relaxed text-amber-900">
+            No Odoo service credential is set, so projects cannot be looked up yet. You can
+            still type an id and save — it is verified when a credential exists.
+            <a href="/settings" class="font-medium underline underline-offset-2">Add one</a>.
+          </p>
+        </div>
+        {% endif %}
 
-    {{ field('Staging URL', 'staging_url', values.get('staging_url'),
-             'https://client-staging.odoo.com', true) }}
-    {{ field('Staging database', 'staging_db', values.get('staging_db'),
-             'legacymakermeats_staging', true) }}
-    {{ field('Database name pattern', 'db_name_pattern',
-             values.get('db_name_pattern') or '%_staging', '%_staging', true,
-             'The gate refuses to run unless the database name matches this. Belt to the sentinel’s braces.') }}
+        {# Pick from the list. The checkboxes carry the same `project_id` name the
+           manual rows do, so the server sees one list either way and needs to
+           know nothing about which control produced it. #}
+        {% set chosen = [] %}
+        {% for cp in (client_projects or []) %}
+          {% if cp.odoo_project_id is defined and cp.odoo_project_id %}
+            {% set _ = chosen.append(cp.odoo_project_id|string) %}
+          {% endif %}
+        {% endfor %}
 
-    <hr class="border-slate-200">
-    <p class="text-xs uppercase tracking-wider text-slate-500">Git</p>
+        {% if all_projects %}
+        <div>
+          <div class="flex items-baseline justify-between gap-3">
+            <label for="project-filter" class="label">Projects in your Odoo</label>
+            <span class="text-[11.5px] text-slate-400">
+              <span id="project-count">{{ chosen|length }}</span> selected
+            </span>
+          </div>
+          <input id="project-filter" type="search" autocomplete="off"
+                 placeholder="Filter {{ all_projects|length }} projects by name or id…"
+                 class="field mt-1 text-[13px]">
+          {# Scrolls rather than paginates: the whole list is already here, so a
+             round trip per keystroke would buy nothing. #}
+          <div id="project-list"
+               class="mt-2 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white">
+            {% for p in all_projects %}
+            <label data-project-option
+                   data-search="{{ (p.name ~ ' ' ~ p.id ~ ' ' ~ (p.company or ''))|lower }}"
+                   class="flex cursor-pointer items-center gap-3 border-b border-slate-100
+                          px-3.5 py-2 last:border-b-0 hover:bg-brand-50/40">
+              <input type="checkbox" name="project_id" value="{{ p.id }}"
+                     {{ 'checked' if (p.id|string) in chosen }}
+                     class="shrink-0">
+              <span class="min-w-0 flex-1 truncate text-[13px] text-slate-800">{{ p.name }}</span>
+              {% if p.company %}
+              <span class="shrink-0 truncate text-[11px] text-slate-400">{{ p.company }}</span>
+              {% endif %}
+              <span class="shrink-0 font-mono text-[11px] text-slate-400">#{{ p.id }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <p id="project-empty" class="mt-2 hidden text-[12.5px] text-slate-500">
+            No project matches that. If it is archived or brand new it may not be listed —
+            add its id by hand below.
+          </p>
+        </div>
+        {% elif projects_error %}
+        <div class="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5">
+          <p class="text-[12.5px] leading-relaxed text-amber-900">{{ projects_error }}</p>
+        </div>
+        {% endif %}
 
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label for="branch_mode" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
-          Branch mode
-        </label>
-        <select id="branch_mode" name="branch_mode"
-                class="field">
-          {% for key, label in branch_modes %}
-          <option value="{{ key }}" {{ 'selected' if values.get('branch_mode') == key }}>{{ label }}</option>
-          {% endfor %}
-        </select>
-        <p class="mt-1 text-xs text-slate-500">
-          Shared branches make a regression impossible to attribute to a task.
+        {# The escape hatch. An archived project, or one created since this page
+           loaded, still has to be reachable — so typing an id stays possible
+           rather than being replaced by the list. #}
+        <details {{ 'open' if not all_projects }}>
+          <summary class="cursor-pointer text-[12.5px] font-medium text-brand-600">
+            {{ 'Enter project ids by hand' if not all_projects else 'Or add an id by hand' }}
+          </summary>
+          <div id="project-rows" class="mt-2 space-y-2">
+            {% for cp in (client_projects or [{}]) %}
+            {# Only ids that are not already offered as a checkbox; otherwise the
+               same project would be submitted twice. #}
+            {% if not all_projects or (cp.odoo_project_id is not defined)
+                  or (cp.odoo_project_id|string) not in chosen %}
+            <div data-project-row class="flex items-center gap-3">
+              <input name="project_id" type="text" inputmode="numeric" placeholder="325"
+                     value="{{ cp.odoo_project_id if cp.odoo_project_id is defined else '' }}"
+                     class="field w-40 font-mono text-[13px]">
+              <span class="min-w-0 flex-1 truncate text-sm
+                           {{ 'text-slate-700' if cp.odoo_project_name is defined and cp.odoo_project_name
+                              else 'text-slate-400' }}">
+                {{ cp.odoo_project_name if cp.odoo_project_name is defined and cp.odoo_project_name
+                   else 'Press Look up to resolve the name' }}
+              </span>
+              <button type="button" data-remove-row title="Remove"
+                      class="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-400
+                             hover:bg-rose-50 hover:text-rose-600">
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
+            </div>
+            {% endif %}
+            {% endfor %}
+          </div>
+        </details>
+
+        <template id="project-template">
+          <div data-project-row class="flex items-center gap-3">
+            <input name="project_id" type="text" inputmode="numeric" placeholder="326"
+                   class="field w-40 font-mono text-[13px]">
+            <span class="min-w-0 flex-1 truncate text-sm text-slate-400">
+              Press Look up to resolve the name
+            </span>
+            <button type="button" data-remove-row
+                    class="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-400
+                           hover:bg-rose-50 hover:text-rose-600">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+        </template>
+
+        <div class="flex items-center gap-4">
+          <button type="button" id="add-project"
+                  class="inline-flex items-center gap-1.5 text-[13px] font-medium
+                         text-brand-600 hover:text-brand-700">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            Add another project
+          </button>
+          <button type="submit" name="action" value="lookup" class="btn-ghost">
+            Look up projects
+          </button>
+        </div>
+        <p class="text-xs leading-relaxed text-slate-500">
+          The numeric id from each project's URL in Odoo. <b>Look up</b> resolves the names,
+          collects the stages the projects share, and — once a stage is chosen — shows exactly
+          which tasks that setting will pick up.
         </p>
+
+        {% if lookup_error %}
+        <div class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+          <p class="text-[13px] leading-relaxed text-rose-800">{{ lookup_error }}</p>
+          {% if not service_configured %}
+          <a href="/settings" class="mt-2 inline-flex items-center gap-1.5 rounded-lg border
+             border-rose-300 bg-white px-2.5 py-1.5 text-[12.5px] font-medium text-rose-900
+             hover:bg-rose-100">
+            Add the Odoo service credential
+            <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M7.3 14.7a1 1 0 010-1.4L10.6 10 7.3 6.7a1 1 0 111.4-1.4l4 4a1 1 0 010 1.4l-4 4a1 1 0 01-1.4 0z" clip-rule="evenodd"/>
+            </svg>
+          </a>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <div>
+          <label for="task_stage_name" class="label">Stage that queues work for review</label>
+          {% if stage_names %}
+          <select id="task_stage_name" name="task_stage_name" class="field">
+            <option value="">— any stage —</option>
+            {% for name in stage_names %}
+            <option value="{{ name }}" {{ 'selected' if values.get('task_stage_name') == name }}>
+              {{ name }}{% if stage_counts.get(name) %} ({{ stage_counts.get(name) }} tasks){% endif %}
+            </option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <input id="task_stage_name" name="task_stage_name" type="text" placeholder="PM Review"
+                 value="{{ values.get('task_stage_name') or '' }}" class="field">
+          {% endif %}
+          <p class="mt-1.5 text-xs leading-relaxed text-slate-500">
+            Matched <b>by name</b> in every project above, because stage ids differ per project.
+            That is what lets one setting mean "everything waiting for review", however many
+            projects this client has.
+          </p>
+        </div>
+
+        {% if preview_stage %}
+        <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <p class="text-[12.5px] font-medium text-slate-700">
+            {{ task_preview|length }} task{{ '' if task_preview|length == 1 else 's' }}
+            currently in <span class="text-brand-700">{{ preview_stage }}</span>
+          </p>
+          {% if task_preview %}
+          <ul class="mt-2 space-y-1">
+            {% for pname, t in task_preview[:12] %}
+            <li class="flex items-baseline gap-2 text-[12.5px]">
+              <span class="font-mono text-[11px] text-slate-400">#{{ t.id }}</span>
+              <span class="min-w-0 flex-1 truncate text-slate-700">{{ t.name }}</span>
+              {% if client_projects and client_projects|length > 1 %}
+              <span class="shrink-0 text-[11px] text-slate-400">{{ pname }}</span>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% if task_preview|length > 12 %}
+          <p class="mt-2 text-[11.5px] text-slate-400">
+            and {{ task_preview|length - 12 }} more
+          </p>
+          {% endif %}
+          {% else %}
+          <p class="mt-1 text-[12.5px] leading-relaxed text-slate-500">
+            Nothing is sitting there right now. That is fine — the setting is what matters, and
+            tasks appear as they reach the stage.
+          </p>
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
-      {{ field('Base branch', 'base_branch', values.get('base_branch') or 'main', 'main', true) }}
-    </div>
+    </section>
+
+    <!-- 3 ─────────────────────────────────────────────── repositories -->
+    <section class="space-y-4">
+      {{ section(3, 'Repositories',
+                 'Every repository holding this client’s addons. Each has its own branch
+                  policy — a theme repo and an addons repo often differ.') }}
+      <div class="card p-5">
+        <div id="repo-rows" class="space-y-3">
+          {% for r in (repos or [{}]) %}
+          <div data-repo-row class="grid grid-cols-[1fr_auto_auto_auto] items-end gap-2">
+            <div>
+              {% if loop.first %}<label class="label">GitHub repository</label>{% endif %}
+              <input name="repo_github" type="text" placeholder="yourorg/yourproject"
+                     value="{{ r.github if r.github is defined else '' }}"
+                     class="field font-mono text-[13px]">
+            </div>
+            <div>
+              {% if loop.first %}<label class="label">Base branch</label>{% endif %}
+              <input name="repo_base_branch" type="text" placeholder="main"
+                     value="{{ r.base_branch if r.base_branch is defined else 'main' }}"
+                     class="field w-36 font-mono text-[13px]">
+            </div>
+            <div>
+              {% if loop.first %}<label class="label">Mode</label>{% endif %}
+              <select name="repo_branch_mode" class="field w-36">
+                {% for key, lbl in branch_modes %}
+                <option value="{{ key }}"
+                  {{ 'selected' if (r.branch_mode if r.branch_mode is defined else 'per_task') == key }}>
+                  {{ 'Per task' if key == 'per_task' else 'Shared' }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <button type="button" data-remove-row title="Remove"
+                    class="mb-1 grid h-9 w-9 place-items-center rounded-lg text-slate-400
+                           hover:bg-rose-50 hover:text-rose-600">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+          {% endfor %}
+        </div>
+
+        <template id="repo-template">
+          <div data-repo-row class="grid grid-cols-[1fr_auto_auto_auto] items-end gap-2">
+            <input name="repo_github" type="text" placeholder="yourorg/another-repo"
+                   class="field font-mono text-[13px]">
+            <input name="repo_base_branch" type="text" placeholder="main" value="main"
+                   class="field w-36 font-mono text-[13px]">
+            <select name="repo_branch_mode" class="field w-36">
+              <option value="per_task">Per task</option>
+              <option value="shared">Shared</option>
+            </select>
+            <button type="button" data-remove-row
+                    class="mb-1 grid h-9 w-9 place-items-center rounded-lg text-slate-400
+                           hover:bg-rose-50 hover:text-rose-600">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+        </template>
+
+        <button type="button" id="add-repo"
+                class="mt-3 inline-flex items-center gap-1.5 text-[13px] font-medium
+                       text-brand-600 hover:text-brand-700">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add another repository
+        </button>
+
+        <div class="mt-4 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+          <svg class="mt-0.5 h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7.5 3.4v5.2c0 4.3-3.1 8.3-7.5 9.4-4.4-1.1-7.5-5.1-7.5-9.4V6.4L12 3Z"/>
+            <path d="M9 12.5l2 2 4-4"/>
+          </svg>
+          <p class="text-[12.5px] leading-relaxed text-slate-600">
+            <b class="text-slate-800">Protected branches.</b>
+            The base branch above is only ever <b>read</b> — it is where the code lives and
+            what task branches are diffed against, so <code class="font-mono">main</code> is
+            a normal value here.
+            <span class="mt-1 block">
+              This app <b>never commits or pushes</b> to
+              <code class="font-mono">main</code>, <code class="font-mono">master</code>,
+              <code class="font-mono">production</code>, <code class="font-mono">prod</code>,
+              <code class="font-mono">live</code> or <code class="font-mono">release</code>
+              in any capitalisation. It only ever creates and writes branches under
+              <code class="font-mono text-slate-800">staging</code>, and that is enforced at
+              the write, not by what is typed here.
+            </span>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4 ────────────────────────────────────────── staging instance -->
+    <section class="space-y-4">
+      {{ section(4, 'Staging instance',
+                 'The one managed database the gate runs against. There is no second copy,
+                  so the name pattern is a safety check, not a formality.') }}
+      <div class="card space-y-5 p-5">
+        <div class="grid gap-5 sm:grid-cols-2">
+          <div>
+            <label for="odoo_version" class="label">Odoo version</label>
+            <select id="odoo_version" name="odoo_version" class="field">
+              {% for v in versions %}
+              <option value="{{ v }}" {{ 'selected' if values.get('odoo_version') == v }}>{{ v }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="hosting_platform" class="label">Hosting</label>
+            <select id="hosting_platform" name="hosting_platform" class="field">
+              {% for key, lbl in platforms %}
+              <option value="{{ key }}" {{ 'selected' if values.get('hosting_platform') == key }}>{{ lbl }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        {{ field('Staging URL', 'staging_url', values.get('staging_url'),
+                 'https://yourproject-staging.odoo.com', true) }}
+        {{ field('Staging database', 'staging_db', values.get('staging_db'),
+                 'yourproject_staging', true,
+                 'The exact database name. On Odoo Online it looks like
+                  company-main-1234567, not the subdomain.') }}
+        {{ field('Database name pattern (optional)', 'db_name_pattern',
+                 values.get('db_name_pattern'), '%-staging-%   or   %_staging', true,
+                 'A second, independent guard against ever pointing the gate at production:
+                  the audit refuses unless the database name matches. % is a wildcard.
+                  Leave it blank and the audit reports that this check proves nothing —
+                  which is honest, but one control weaker.') }}
+      </div>
+    </section>
+
+    <!-- 5 ───────────────────────────────────────────── browser login -->
+    <section class="space-y-4">
+      {{ section(5, 'Browser login',
+                 'A real user Playwright signs in as to take screenshots. Add more personas
+                  later to catch access-rights regressions.') }}
+      <div class="card space-y-5 p-5">
+        <div class="grid gap-5 sm:grid-cols-2">
+          {{ field('Username', 'persona_login', values.get('persona_login'),
+                   'qa.bot@yourproject.com', true) }}
+          <div>
+            <label for="persona_password" class="label">Password</label>
+            <input id="persona_password" name="persona_password" type="password"
+                   autocomplete="new-password"
+                   placeholder="{{ '•••••••• (stored)' if persona_saved else '' }}"
+                   class="field font-mono text-[13px]">
+          </div>
+        </div>
+        <div class="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+          <svg class="mt-0.5 h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/>
+          </svg>
+          <p class="text-[12.5px] leading-relaxed text-slate-600">
+            This must be a <b>real password, not an API key</b> — an API key authenticates RPC
+            but cannot open a web session, so a screenshot run would fail with it. The account
+            must not have two-factor enabled, and should be a dedicated QA user rather than a
+            colleague's: their password rotates and their permissions drift, and both look
+            exactly like a regression.
+          </p>
+        </div>
+      </div>
+    </section>
 
     {% if editing %}
     <label class="flex items-center gap-2 text-sm text-slate-700">
       <input type="checkbox" name="active" {{ 'checked' if client.active }}
-             class="rounded border-slate-300 text-accent focus:ring-accent">
+             class="rounded border-slate-300 text-brand-600 focus:ring-brand-500">
       Active
     </label>
     {% endif %}
 
-    <div class="flex items-center gap-3 pt-2">
-      <button type="submit"
-              class="btn-primary">
+    <div class="flex items-center gap-3 border-t border-slate-200 pt-6">
+      <button type="submit" name="action" value="save" class="btn-primary">
         {{ 'Save changes' if editing else 'Create client' }}
       </button>
       <a href="{{ '/clients/%d'|format(client.id) if editing else '/clients' }}"
-         class="text-sm text-slate-500 hover:text-accent">Cancel</a>
+         class="text-sm text-slate-500 hover:text-brand-700">Cancel</a>
     </div>
   </form>
 </div>

@@ -10,7 +10,7 @@ separately and are never selected by the list and detail views.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from . import crypto, db
@@ -44,8 +44,14 @@ class Client:
     staging_db: str
     db_name_pattern: str
     capabilities: list[str] = field(default_factory=list)
-    branch_mode: str = "per_task"
-    base_branch: str = "main"
+    branch_mode: str = "per_task"      # legacy; per-repo policy lives in repos.py
+    base_branch: str = "main"          # legacy; per-repo policy lives in repos.py
+    task_stage_name: str = ""
+    #: "browser" (a real password — screenshots AND data) or "api_key"
+    #: (JSON-RPC only). See migration 008: the browser login is a superset,
+    #: so these are alternatives rather than a pair.
+    access_mode: str = "browser"
+    projects: list = field(default_factory=list)   # ClientProject, filled on demand
     active: bool = True
     created_at: datetime | None = None
     has_credentials: bool = False
@@ -60,6 +66,8 @@ class Client:
             db_name_pattern=row["db_name_pattern"],
             capabilities=list(row["capabilities"] or []),
             branch_mode=row["branch_mode"], base_branch=row["base_branch"],
+            task_stage_name=row.get("task_stage_name") or "",
+            access_mode=row.get("access_mode") or "browser",
             active=row["active"], created_at=row.get("created_at"),
             has_credentials=bool(row.get("has_credentials")),
         )
@@ -67,6 +75,11 @@ class Client:
     @property
     def hosting_label(self) -> str:
         return dict(HOSTING_PLATFORMS).get(self.hosting_platform, self.hosting_platform)
+
+    @property
+    def has_project(self) -> bool:
+        """Whether tasks can be listed for this client at all."""
+        return bool(self.projects)
 
     @property
     def can_clone(self) -> bool:
@@ -79,8 +92,20 @@ class Client:
         return False
 
 
+# "Can this client's instance be reached at all", which depends on which
+# credential it is configured to use. Checking only for an API key was correct
+# before migration 008 and became a lie after it: a client on browser sign-in
+# has no key by design, and reported as having no credentials while its persona
+# signed in perfectly well.
 _LIST_SQL = """
-    SELECT c.*, (s.rpc_api_key_enc <> '') AS has_credentials
+    SELECT c.*,
+           CASE WHEN c.access_mode = 'api_key'
+                THEN COALESCE(s.rpc_api_key_enc, '') <> ''
+                ELSE EXISTS (SELECT 1 FROM client_personas p
+                              WHERE p.client_id = c.id
+                                AND p.active
+                                AND p.password_enc <> '')
+           END AS has_credentials
     FROM clients c
     LEFT JOIN instance_secrets s ON s.client_id = c.id
 """
@@ -131,6 +156,64 @@ def create(*, slug: str, name: str, created_by: int, **fields) -> Client:
     client = Client.from_row({**row, "has_credentials": False})
     attach_user(created_by, client.id, access="owner")
     return client
+
+
+@dataclass(frozen=True)
+class ClientProject:
+    id: int
+    odoo_project_id: int
+    odoo_project_name: str
+    position: int = 0
+
+    @classmethod
+    def from_row(cls, row: dict) -> "ClientProject":
+        return cls(id=row["id"], odoo_project_id=row["odoo_project_id"],
+                   odoo_project_name=row.get("odoo_project_name") or "",
+                   position=row.get("position") or 0)
+
+
+def projects_for(client_id: int) -> list[ClientProject]:
+    return [ClientProject.from_row(r) for r in db.query(
+        "SELECT * FROM client_projects WHERE client_id = %s ORDER BY position, id",
+        (client_id,))]
+
+
+def set_projects(client_id: int, entries: list[dict], *, stage_name: str = "") -> None:
+    """Replace the whole project list, and set the one stage that queues work.
+
+    The stage is a *name* rather than an id on purpose. `project.task.type` ids
+    differ per project, so "PM Review" is a different id in each one; storing an
+    id would make the obvious request — everything waiting for review, across
+    every project — the awkward case instead of the default.
+    """
+    seen: set[int] = set()
+    cleaned = []
+    for e in entries:
+        raw = str(e.get("odoo_project_id") or "").strip()
+        if not raw:
+            continue
+        if not raw.isdigit():
+            raise ClientError(f"{raw!r} is not a numeric Odoo project id.")
+        pid = int(raw)
+        if pid in seen:
+            raise ClientError(f"Project {pid} is listed twice.")
+        seen.add(pid)
+        cleaned.append((pid, (e.get("odoo_project_name") or "").strip()))
+
+    with db.pool().connection() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM client_projects WHERE client_id = %s", (client_id,))
+        for i, (pid, name) in enumerate(cleaned):
+            cur.execute(
+                "INSERT INTO client_projects "
+                "(client_id, odoo_project_id, odoo_project_name, position) "
+                "VALUES (%s, %s, %s, %s)", (client_id, pid, name, i))
+        cur.execute("UPDATE clients SET task_stage_name = %s, updated_at = now() "
+                    "WHERE id = %s", (stage_name.strip(), client_id))
+
+
+def with_projects(client: Client) -> Client:
+    """A copy carrying its project list, for pages that render them."""
+    return replace(client, projects=projects_for(client.id))
 
 
 def update(client_id: int, **fields) -> Client:
@@ -253,19 +336,29 @@ def set_rpc_credentials(client_id: int, *, login: str, api_key: str,
     account has 2FA, and it can be revoked in Odoo without changing a password
     a human also uses. It deliberately cannot open a browser session — those
     need real persona passwords, which arrive in phase B.
+
+    Storing one also switches the client to `api_key` access mode. Nobody enters
+    a key they do not intend the gate to use, and leaving the mode alone would
+    store a credential that is then silently ignored — the same class of quiet
+    misconfiguration the whole verify-before-store habit exists to avoid.
     """
-    db.execute(
-        """
-        INSERT INTO instance_secrets (client_id, rpc_login, rpc_api_key_enc, updated_by)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (client_id) DO UPDATE SET
-            rpc_login       = EXCLUDED.rpc_login,
-            rpc_api_key_enc = EXCLUDED.rpc_api_key_enc,
-            updated_by      = EXCLUDED.updated_by,
-            updated_at      = now()
-        """,
-        (client_id, login.strip(), crypto.encrypt(secret_key, api_key), updated_by),
-    )
+    with db.pool().connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO instance_secrets (client_id, rpc_login, rpc_api_key_enc, updated_by)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (client_id) DO UPDATE SET
+                rpc_login       = EXCLUDED.rpc_login,
+                rpc_api_key_enc = EXCLUDED.rpc_api_key_enc,
+                updated_by      = EXCLUDED.updated_by,
+                updated_at      = now()
+            """,
+            (client_id, login.strip(), crypto.encrypt(secret_key, api_key), updated_by),
+        )
+        cur.execute(
+            "UPDATE clients SET access_mode = 'api_key', updated_at = now() WHERE id = %s",
+            (client_id,),
+        )
 
 
 def get_rpc_credentials(client_id: int, secret_key: str) -> tuple[str, str]:
@@ -277,3 +370,18 @@ def get_rpc_credentials(client_id: int, secret_key: str) -> tuple[str, str]:
     if not row or not row["rpc_api_key_enc"]:
         return "", ""
     return row["rpc_login"], crypto.decrypt(secret_key, row["rpc_api_key_enc"])
+
+
+def set_access_mode(client_id: int, mode: str) -> None:
+    """Which credential the gate uses to reach this client's staging instance.
+
+    See migration 008: the two are alternatives, not a pair, because a browser
+    sign-in can do everything an API key can and an API key cannot open a web
+    session.
+    """
+    if mode not in ("browser", "api_key"):
+        raise ClientError(f"Unknown access mode {mode!r}.")
+    db.execute(
+        "UPDATE clients SET access_mode = %s, updated_at = now() WHERE id = %s",
+        (mode, client_id),
+    )

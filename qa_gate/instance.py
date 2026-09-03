@@ -28,6 +28,23 @@ from .odoo_client import OdooAuthError, OdooClient, OdooError
 
 log = logging.getLogger(__name__)
 
+#: Open browser sessions, by (client id, login). Odoo throttles repeated logins
+#: — observed live: a persona that authenticated fine all morning began refusing
+#: every attempt after a burst of session opens, and stayed refused. Each
+#: `connect()` used to mint a fresh session, so a single review could ask for a
+#: dozen. Reusing one is both kinder to the instance and the difference between
+#: a review that runs and one that locks the account out mid-way.
+#:
+#: Deliberately per-process and never persisted: a session id is a live
+#: credential, and one written to disk outlives the reason it existed.
+_SESSIONS: dict[tuple[int, str], str] = {}
+
+
+def forget_session(client_id: int, login: str = "") -> None:
+    """Drop cached sessions so the next connect authenticates afresh."""
+    for key in [k for k in _SESSIONS if k[0] == client_id and (not login or k[1] == login)]:
+        _SESSIONS.pop(key, None)
+
 # Longer than the identity default: a census asks for a few thousand rows from
 # an instance that may be on a small managed plan, and a timeout here reads to
 # the user as "the audit is broken" rather than "staging is slow".
@@ -51,9 +68,24 @@ class Connection:
     uid: int
     secret: str
     server_version: str = ""
+    #: Set when this connection is authenticated by a browser session rather
+    #: than an API key. Both reach the same ORM; see `call`.
+    session_id: str = ""
+    #: "browser" or "api_key" — which credential opened it. Reported in the UI
+    #: so nobody has to infer it from which fields happen to be filled in.
+    via: str = "api_key"
 
     def call(self, model: str, method: str,
              args: list | None = None, kwargs: dict | None = None) -> Any:
+        """One ORM call, over whichever credential this connection was opened with.
+
+        The two transports are interchangeable for reading: `/jsonrpc` with an
+        API key and `/web/dataset/call_kw` with a session cookie both land in
+        `execute_kw` on the server. Keeping the choice here means census, audit
+        and every future assertion are written once and work either way.
+        """
+        if self.session_id:
+            return self.odoo.call_kw_session(self.session_id, model, method, args, kwargs)
         return self.odoo.execute_kw(self.uid, self.secret, model, method, args, kwargs)
 
     # ---- tolerant reads ----------------------------------------------------
@@ -122,10 +154,6 @@ def connect(client: Client, secret_key: str) -> Connection:
     if not client.staging_url or not client.staging_db:
         raise MissingCredentials(
             f"{client.slug} has no staging URL or database name configured.")
-    login, api_key = clients_mod.get_rpc_credentials(client.id, secret_key)
-    if not login or not api_key:
-        raise MissingCredentials(
-            f"{client.slug} has no stored RPC credentials. Add them on the client page.")
 
     odoo = OdooClient(client.staging_url, client.staging_db, timeout=INSTANCE_TIMEOUT)
     version = ""
@@ -135,6 +163,84 @@ def connect(client: Client, secret_key: str) -> Connection:
         # Non-fatal: some reverse proxies restrict `common.version` while
         # leaving object calls open. Authentication below is the real check.
         log.info("%s: common.version unavailable, continuing", client.slug)
-    uid = odoo.authenticate(login, api_key)
-    return Connection(client=client, odoo=odoo, uid=uid, secret=api_key,
-                      server_version=version)
+
+    # The client says which credential it is configured with, and that choice is
+    # honoured rather than guessed at. Falling back between the two would make a
+    # revoked API key look like a working instance reached as somebody else —
+    # the audit would then attribute its results to the wrong user.
+    if client.access_mode == "api_key":
+        login, api_key = clients_mod.get_rpc_credentials(client.id, secret_key)
+        if not login or not api_key:
+            raise MissingCredentials(
+                f"{client.slug} is set to reach staging by API key, but none is "
+                "stored. Add one on the client page, or switch it to browser "
+                "sign-in — a browser login can read data as well as take "
+                "screenshots, so it needs no API key.")
+        uid = odoo.authenticate(login, api_key)
+        return Connection(client=client, odoo=odoo, uid=uid, secret=api_key,
+                          server_version=version, via="api_key")
+
+    # A session opened with a real password reaches the same ORM *and* can drive
+    # a browser, while an API key can only do the first. This is the default for
+    # that reason, not as a fallback.
+    from . import personas as personas_mod
+
+    verified = [p for p in personas_mod.for_client(client.id)
+                if p.state == "verified" and p.has_password]
+    if not verified:
+        raise MissingCredentials(
+            f"{client.slug} has no way to reach its staging instance. Add either "
+            "a browser sign-in (a real password, verified on the client page) or "
+            "an API key. A browser sign-in is enough on its own — it can both "
+            "take screenshots and read data.")
+
+    # Deterministic rather than "whichever came back first", so two runs of the
+    # same audit are not attributed to two different users.
+    persona = sorted(verified, key=lambda p: (p.key != "primary", p.key))[0]
+    password = personas_mod.password_of(persona.id, secret_key)
+    if not password:
+        raise MissingCredentials(
+            f"{client.slug}: persona {persona.key!r} is marked verified but has "
+            "no stored password. Re-enter it on the client page.")
+
+    # Reuse a session we already hold for this persona, and only prove it is
+    # still good with one cheap call. A dead session answers that call with
+    # SessionExpired, which is the signal to log in again — and logging in again
+    # is exactly what has to stay rare.
+    cache_key = (client.id, persona.login)
+    session_id = _SESSIONS.get(cache_key, "")
+    if session_id:
+        try:
+            odoo.call_kw_session(session_id, "res.users", "context_get", [])
+        except (OdooAuthError, OdooError):
+            log.info("%s: cached session for %s is stale", client.slug, persona.login)
+            _SESSIONS.pop(cache_key, None)
+            session_id = ""
+
+    try:
+        if not session_id:
+            session_id = odoo.open_session(persona.login, password)
+            _SESSIONS[cache_key] = session_id
+    except OdooAuthError as exc:
+        # The credential worked when it was verified and does not now. Record it
+        # against the persona so the client page stops claiming otherwise, then
+        # raise something that names the fix rather than "Access Denied".
+        personas_mod.record_failure(persona.id, str(exc))
+        raise MissingCredentials(
+            f"{client.slug}: the staging instance rejected the browser sign-in "
+            f"for {persona.login} ({exc}). Three things do this, in order of "
+            "likelihood: Odoo is rate-limiting after too many logins in a short "
+            "time — wait a few minutes and try again, and note it clears on its "
+            "own; the password was changed; or the staging database was rebuilt, "
+            "which resets it. If waiting does not help, re-enter the password on "
+            "the client page and press Verify login."
+        ) from exc
+    uid = 0
+    try:
+        uid = int((odoo.call_kw_session(session_id, "res.users", "context_get", [])
+                   or {}).get("uid") or 0)
+    except (OdooError, OdooAuthError):
+        # The session is open; not knowing the uid costs nothing for reads.
+        log.info("%s: session opened but context_get failed", client.slug)
+    return Connection(client=client, odoo=odoo, uid=uid, secret="",
+                      server_version=version, session_id=session_id, via="browser")

@@ -1,4 +1,4 @@
-# Odoo PM Bot
+# Odoo PM Agent
 
 An automated verification stage between "the developer says it is done" and "a human looks
 at it". It takes an Odoo `project.task` plus a git diff, runs against the client's **own

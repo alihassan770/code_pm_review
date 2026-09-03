@@ -152,6 +152,19 @@ class GitHub:
             raise GitHubError(f"No commit found for {repo}@{ref}.")
         return str(sha)
 
+    def branches(self, repo: str, limit: int = 30) -> list[str]:
+        """Branch names, used to explain a base branch that does not resolve.
+
+        "No such branch" is a much more useful error when it can add "these are
+        the ones that exist" — the usual cause is a repo on `main` configured
+        with `staging`, and guessing which is a waste of somebody's afternoon.
+        """
+        try:
+            rows = self._get(f"/repos/{repo}/branches", {"per_page": limit})
+        except GitHubError:
+            return []
+        return [r["name"] for r in rows if isinstance(r, dict) and r.get("name")]
+
     def tree(self, repo: str, sha: str) -> list[TreeEntry]:
         """The whole tree at one commit, in one request.
 

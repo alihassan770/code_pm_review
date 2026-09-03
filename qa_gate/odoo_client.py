@@ -205,6 +205,107 @@ class OdooClient:
             is_admin=is_admin,
         )
 
+    def open_session(self, login: str, password: str) -> str:
+        """Log in the way a browser does, and return the `session_id` cookie.
+
+        This is the credential path Playwright needs, and it is deliberately
+        different from `authenticate()`. Odoo treats a web login as
+        *interactive*, and the API-key branch of `_check_credentials` sits behind
+        `if not interactive:` — so an API key authenticates RPC and cannot open a
+        session, while a real password can. A persona configured with an API key
+        will therefore pass an RPC check and still fail to produce a screenshot,
+        which is why personas are verified through this call and not that one.
+
+        Used at configuration time to prove the credential works. Phase G will
+        reuse it to seed the browser context rather than driving the login form,
+        because the form's markup changes between 17, 18 and 19 and this endpoint
+        does not.
+        """
+        try:
+            resp = httpx.post(
+                f"{self.url}/web/session/authenticate",
+                json={"jsonrpc": "2.0", "method": "call",
+                      "params": {"db": self.db, "login": login, "password": password}},
+                timeout=self.timeout, follow_redirects=True,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        except httpx.HTTPError as exc:
+            raise OdooError(f"Could not reach {self.url}: {exc}") from exc
+        except ValueError as exc:
+            raise OdooError(f"{self.url} did not return JSON for a session login.") from exc
+
+        if "error" in body:
+            data = (body["error"] or {}).get("data") or {}
+            raise OdooAuthError(data.get("message") or "Odoo refused the login.")
+
+        session_id = resp.cookies.get("session_id") or ""
+        uid = (body.get("result") or {}).get("uid")
+        if not uid or not session_id:
+            raise OdooAuthError(
+                "Odoo accepted the request but issued no session. For a browser "
+                "login this must be a real password — an API key cannot open a "
+                "web session — and the account must not have two-factor enabled."
+            )
+        return session_id
+
+    def call_kw_session(
+        self, session_id: str, model: str, method: str,
+        args: list[Any] | None = None, kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        """`execute_kw`, but authenticated by a browser session cookie.
+
+        The same ORM call the web client makes. It matters because it collapses
+        two credentials into one: a session opened with a real password can both
+        drive a browser (screenshots) *and* read data (assertions), whereas an
+        API key can only do the second — Odoo's `_check_credentials` puts the
+        key branch behind `if not interactive:`.
+
+        So the browser login is a strict superset of the API key, and a client
+        configured with one needs no RPC credential at all. Verified against a
+        live 17.0 instance: `search_count`, `fields_get` and `context_get` all
+        answer over this endpoint with only the cookie, and none of it requires
+        developer mode — that is a UI setting and has no bearing on ORM access.
+
+        The trade is lifetime. A session expires and an API key does not, so a
+        long unattended run may have to re-open one; `instance.connect` handles
+        that by opening a fresh session per connection rather than storing it.
+        """
+        payload = {
+            "jsonrpc": "2.0", "method": "call",
+            "params": {"model": model, "method": method,
+                       "args": args or [], "kwargs": kwargs or {}},
+        }
+        try:
+            resp = httpx.post(
+                f"{self.url}/web/dataset/call_kw", json=payload,
+                cookies={"session_id": session_id},
+                timeout=self.timeout, follow_redirects=True,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        except httpx.HTTPError as exc:
+            raise OdooError(f"Could not reach {self.url}: {exc}") from exc
+        except ValueError as exc:
+            raise OdooError(
+                f"{self.url}/web/dataset/call_kw did not return JSON. A session "
+                "that has expired is answered with an HTML login page rather "
+                "than an error, so this usually means re-authenticating."
+            ) from exc
+
+        if "error" in body:
+            err = body["error"] or {}
+            data = err.get("data") or {}
+            message = data.get("message") or err.get("message") or "Unknown Odoo error"
+            name = data.get("name", "")
+            # A dead session surfaces as SessionExpiredException, which is an
+            # auth problem rather than a bug in the call — say so, so the caller
+            # can re-open one instead of reporting the model as unreadable.
+            if "SessionExpired" in name or "AccessDenied" in name:
+                raise OdooAuthError(message)
+            raise OdooError(f"{name or 'Odoo error'}: {message}")
+        return body.get("result")
+
     def login(self, login: str, secret: str) -> OdooUser:
         """authenticate + read, which is what the login form actually wants."""
         uid = self.authenticate(login, secret)

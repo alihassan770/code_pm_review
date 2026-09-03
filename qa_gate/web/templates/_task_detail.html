@@ -1,0 +1,87 @@
+{# Expanded body of one task. Returned as a fragment for HTMX, so it extends
+   nothing and renders only what goes inside the row. #}
+
+{% if error %}
+<div class="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5">
+  <p class="text-[12.5px] leading-relaxed text-amber-900">{{ error }}</p>
+</div>
+
+{% else %}
+{% if description %}
+{# `description` has already been reduced to an allowlist in html_clean, with
+   Odoo's images re-pointed at the authenticated proxy. #}
+<div class="prose-task text-[13.5px] leading-relaxed text-slate-700">
+  {{ description|safe }}
+</div>
+{% else %}
+<p class="text-[13px] italic text-slate-400">No description on this task.</p>
+{% endif %}
+
+{% if dropped_images %}
+<p class="mt-2 text-[11.5px] text-slate-400">
+  {{ dropped_images }} image{{ '' if dropped_images == 1 else 's' }} in this description
+  {{ 'is' if dropped_images == 1 else 'are' }} not shown.
+</p>
+{% endif %}
+
+{% if detail and detail.attachments_error %}
+<div class="mt-4 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5">
+  <svg class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" viewBox="0 0 20 20" fill="currentColor">
+    <path fill-rule="evenodd" d="M8.3 3.3a2 2 0 013.4 0l6 10.4A2 2 0 0116 16.8H4a2 2 0 01-1.7-3.1l6-10.4zM10 7a1 1 0 011 1v3a1 1 0 11-2 0V8a1 1 0 011-1zm0 7.5a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+  </svg>
+  <p class="text-[12.5px] leading-relaxed text-amber-900">{{ detail.attachments_error }}</p>
+</div>
+{% endif %}
+
+{% if detail and detail.attachments %}
+<div class="mt-4">
+  <p class="text-[11px] font-semibold uppercase tracking-[.08em] text-slate-400">
+    {{ detail.attachments|length }} attachment{{ '' if detail.attachments|length == 1 else 's' }}
+  </p>
+
+  {% set images = detail.attachments | selectattr('is_image') | list %}
+  {% set files  = detail.attachments | rejectattr('is_image') | list %}
+
+  {% if images %}
+  <div class="mt-2 flex flex-wrap gap-2">
+    {% for a in images %}
+    <a href="/clients/{{ client.id }}/tasks/{{ task_id }}/file/{{ a.id }}"
+       target="_blank" rel="noopener" title="{{ a.name }} · {{ a.human_size }}"
+       class="block overflow-hidden rounded-lg border border-slate-200 bg-white
+              hover:border-brand-300">
+      <img src="/clients/{{ client.id }}/tasks/{{ task_id }}/file/{{ a.id }}"
+           alt="{{ a.name }}" loading="lazy"
+           class="h-24 w-32 object-cover">
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if files %}
+  <div class="mt-2 space-y-1">
+    {% for a in files %}
+    <a href="/clients/{{ client.id }}/tasks/{{ task_id }}/file/{{ a.id }}"
+       target="_blank" rel="noopener"
+       class="flex items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-3 py-2
+              text-[13px] hover:border-brand-300">
+      {% if a.is_pdf %}
+      <svg class="h-4 w-4 shrink-0 text-rose-500" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 3v5h5M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5Z"/>
+      </svg>
+      {% else %}
+      <svg class="h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.8V17a4 4 0 01-4 4H7a4 4 0 01-4-4V7a4 4 0 014-4h4.2"/>
+        <path d="M14 3h7v7"/>
+      </svg>
+      {% endif %}
+      <span class="min-w-0 flex-1 truncate text-slate-700">{{ a.name }}</span>
+      <span class="shrink-0 text-[11.5px] text-slate-400">{{ a.human_size }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+{% endif %}

@@ -21,6 +21,14 @@ USERS = {
 }
 
 
+#: Chatter posts this fake has accepted, newest last. A test asserts on what
+#: reached the server rather than on what the code says it sent.
+MESSAGES: list[dict] = []
+#: Whether `message_post` accepts `subtype_xmlid`. Flipped off by a test to
+#: stand in for a version that does not, so the fallback path is real.
+SUPPORTS_SUBTYPE_XMLID = True
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
@@ -66,9 +74,32 @@ class Handler(BaseHTTPRequestHandler):
                 return [{"id": uid, "login": login, "name": rec[3], "email": rec[4]}]
             if model == "res.users" and meth == "has_group":
                 return rec[5] if m_args[1] == "base.group_system" else False
+            if model == "project.task" and meth == "message_post":
+                return self._message_post(m_args, m_kwargs or {})
             raise RuntimeError(f"unsupported {model}.{meth}")
 
         raise RuntimeError(f"unsupported {service}.{method}")
+
+    def _message_post(self, args, kwargs):
+        """Record a chatter post, refusing what the real server would refuse.
+
+        `subtype_xmlid` is rejected when SUPPORTS_SUBTYPE_XMLID is off, so the
+        version-tolerant fallback in projects.post_note is exercised rather than
+        assumed. Attachments are refused outright: nothing in the gate may pass
+        them, and a fake that accepted them silently would let that change
+        without a test noticing.
+        """
+        if kwargs.get("attachment_ids"):
+            raise RuntimeError("fake_odoo: the gate must never post attachments")
+        if "subtype_xmlid" in kwargs and not SUPPORTS_SUBTYPE_XMLID:
+            raise RuntimeError("Invalid field 'subtype_xmlid' on model 'mail.message'")
+        MESSAGES.append({
+            "task_id": (args[0] or [0])[0] if args else 0,
+            "body": kwargs.get("body", ""),
+            "message_type": kwargs.get("message_type", ""),
+            "subtype_xmlid": kwargs.get("subtype_xmlid", ""),
+        })
+        return 1000 + len(MESSAGES)
 
     def _auth(self, login, secret):
         rec = USERS.get(login)

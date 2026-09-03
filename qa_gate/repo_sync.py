@@ -85,8 +85,30 @@ def fetch(client: Client, *, token: str = "", api_root: str = github.API_ROOT,
         snap.commit_sha = gh.head_sha(client.github, ref)
         entries = gh.tree(client.github, snap.commit_sha)
     except NotFound as exc:
-        snap.error = (f"{exc} Looked for {client.github}@{ref}; check the "
-                      "owner/name and the base branch on the client page.")
+        # Distinguish "the branch is wrong" from "we cannot see this repo at
+        # all". GitHub returns 404 for both a missing repo and a private one we
+        # are not authorised for, so the branch list is the tell: if it comes
+        # back, the repo is visible and only the ref is wrong.
+        available = gh.branches(client.github)
+        if available:
+            snap.error = (
+                f"{client.github} has no branch {ref!r}. It has: "
+                f"{', '.join(available[:12])}"
+                f"{' …' if len(available) > 12 else ''}. "
+                "Set the base branch on the client page to one of these.")
+        elif token:
+            snap.error = (
+                f"Cannot read {client.github}@{ref}. The GitHub token is set but "
+                "does not grant access to this repository — check it carries the "
+                "`repo` scope, has not expired, and that the account can see this "
+                "organisation. For a fine-grained token an organisation admin may "
+                "still need to approve it.")
+        else:
+            snap.error = (
+                f"Cannot read {client.github}@{ref}, and no GitHub token is "
+                "configured. Private repositories are invisible without one — "
+                "GitHub answers with the same 404 it would give for a repository "
+                "that does not exist. Add a token under Settings.")
         return snap
     except GitHubError as exc:
         snap.error = str(exc)
@@ -95,12 +117,11 @@ def fetch(client: Client, *, token: str = "", api_root: str = github.API_ROOT,
     snap.modules = github.module_dirs(entries)
     knowledge_entry, scenario_entries = github.qa_files(entries)
 
-    if knowledge_entry is None:
-        snap.warnings.append(
-            f"No {knowledge_mod.PATH} in this repo. The curated overlay is the only "
-            "knowledge layer a human has to write, and without it the gate has no "
-            "business invariants, danger zones, or unused-app list for this client.")
-    else:
+    # A missing overlay is not a warning: `knowledge.present` already says so as a
+    # field, and every caller renders it in its own way. Saying it here too meant
+    # the page announced it twice, once in a note and once in the card that offers
+    # the starter file.
+    if knowledge_entry is not None:
         try:
             snap.knowledge = knowledge_mod.parse(
                 gh.blob_text(client.github, knowledge_entry.sha))
@@ -197,9 +218,43 @@ def load(client_id: int) -> Snapshot | None:
 
 
 def sync(client: Client, *, token: str = "", api_root: str = github.API_ROOT,
-         fetched_by: int | None = None) -> Snapshot:
+         fetched_by: int | None = None, with_source: bool = True) -> Snapshot:
+    """Refresh the cached parse, and with it the source the agent reads.
+
+    The bundle is rebuilt here rather than on demand because "refresh" should
+    mean one thing: after it, everything derived from this repo describes the
+    same commit. A source bundle refreshed on some other schedule would let the
+    agent answer from code the page is not showing.
+
+    A bundle failure is recorded as a warning rather than raised. The module
+    list, coverage map and history are still worth having when the tarball
+    endpoint is having a bad day, and taking the whole refresh down would mean
+    losing all of it to recover none of it.
+    """
     snap = fetch(client, token=token, api_root=api_root)
     save(client.id, snap, fetched_by=fetched_by)
+
+    if with_source and snap.ok:
+        from . import source_bundle
+        try:
+            bundle = source_bundle.build(client, commit_sha=snap.commit_sha,
+                                         ref=snap.ref, token=token, api_root=api_root)
+            source_bundle.save(bundle)
+            if bundle.error:
+                snap.warnings.append(f"Source for the agent was not read: {bundle.error}")
+            elif bundle.truncated:
+                snap.warnings.append(
+                    f"Source is larger than the bundle limit, so "
+                    f"{len(bundle.skipped)} file(s) were left out. The agent will "
+                    "be told its view is partial.")
+            else:
+                log.info("Bundled %s files (%s est tokens) for %s @ %s",
+                         bundle.file_count, bundle.est_tokens, client.slug,
+                         snap.short_sha)
+        except Exception as exc:  # noqa: BLE001 - never lose the refresh over this
+            log.warning("Source bundle failed for %s: %s", client.slug, exc)
+            snap.warnings.append(f"Source for the agent was not read: {exc}")
+        save(client.id, snap, fetched_by=fetched_by)
     return snap
 
 

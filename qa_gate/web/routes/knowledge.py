@@ -17,7 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from ... import census as census_mod
+from ... import app_secrets, census as census_mod
 from ... import clients as clients_mod
 from ... import coverage as coverage_mod
 from ... import github, instance
@@ -47,7 +47,14 @@ def _client_or_404(request: Request, client_id: int):
 
 
 def _token(request: Request) -> str:
-    return github.resolve_token(request.app.state.config.github_token)
+    """Stored token first, then the config file, then the environment or `gh`.
+
+    The stored one wins because it is the only source a container deployment
+    has: there is no config file to edit and no `gh` on the box.
+    """
+    cfg = request.app.state.config
+    stored = app_secrets.get(app_secrets.GITHUB_TOKEN, cfg.secret_key)
+    return github.resolve_token(stored.secret or cfg.github_token)
 
 
 @router.get("/clients/{client_id}/knowledge")
@@ -62,21 +69,19 @@ def client_knowledge(request: Request, client_id: int):
     snap = repo_sync.load(client_id)
     ctx: dict = {
         "client": client, "snap": snap, "knowledge_path": knowledge_mod.PATH,
-        "stale_entries": [], "contradictions": [], "drift_note": None,
+        "drift_note": None,
+        # "created" or "updated", set by the refresh redirect. Anything else is
+        # ignored, so a hand-typed ?synced=whatever cannot forge a success box.
+        "synced": _synced_flag(request),
     }
     if snap:
-        ctx["stale_entries"] = snap.knowledge.stale()
-        # Contradiction detection needs the instance, and an unreachable one
-        # must not take the page down — the knowledge is still worth reading.
-        try:
-            conn = instance.connect(client, request.app.state.config.secret_key)
-            ctx["contradictions"] = knowledge_mod.contradictions(
-                snap.knowledge, census_mod.take(conn))
-        except (instance.MissingCredentials, OdooAuthError, OdooError) as exc:
-            ctx["census_error"] = (
-                f"Contradictions could not be checked against the instance: {exc}")
         ctx["drift_note"] = repo_sync.stale(client, snap, token=_token(request))
     return deps.render(request, "client_knowledge.html", ctx)
+
+
+def _synced_flag(request: Request) -> str:
+    value = request.query_params.get("synced") or ""
+    return value if value in ("created", "updated") else ""
 
 
 @router.post("/clients/{client_id}/knowledge/refresh")
@@ -90,19 +95,31 @@ async def refresh_knowledge(request: Request, client_id: int):
     form = dict(await request.form())
     deps.verify_csrf(session, form.get("csrf_token"))
 
+    # Whether this is the first successful read decides which word the toast
+    # uses. Taken before the sync, because after it there is always a row.
+    existing = repo_sync.load(client_id)
+    first_time = not (existing and existing.commit_sha)
+
     try:
         snap = await run_in_threadpool(
             repo_sync.sync, client, token=_token(request), fetched_by=session.user.id)
     except repo_sync.NoRepository as exc:
         return deps.render(request, "client_knowledge.html", {
             "client": client, "snap": None, "knowledge_path": knowledge_mod.PATH,
-            "error": str(exc), "stale_entries": [], "contradictions": [],
+            "error": str(exc), "synced": "", "drift_note": None,
         })
-    log.info("Repo sync for %s by %s: %s @ %s (%s scenarios)", client.slug,
-             session.user.login, client.github, snap.short_sha, len(snap.scenarios))
-    back = form.get("back") or f"/clients/{client_id}/knowledge"
-    return RedirectResponse(deps.safe_next(back, f"/clients/{client_id}/knowledge"),
-                            status_code=303)
+    log.info("Repo sync for %s by %s: %s @ %s (%s module(s))", client.slug,
+             session.user.login, client.github, snap.short_sha, len(snap.modules))
+
+    back = deps.safe_next(form.get("back") or f"/clients/{client_id}/knowledge",
+                          f"/clients/{client_id}/knowledge")
+    # Only a read that actually produced a commit is worth announcing. A failed
+    # one already renders its own error, and a green box above a red one would
+    # be the page contradicting itself.
+    if snap.ok:
+        flag = "created" if first_time else "updated"
+        back += ("&" if "?" in back else "?") + f"synced={flag}"
+    return RedirectResponse(back, status_code=303)
 
 
 @router.get("/clients/{client_id}/coverage")

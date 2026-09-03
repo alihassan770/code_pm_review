@@ -1,34 +1,45 @@
 {% extends "base.html" %}
-{% block title %}{{ client.name }} · Odoo PM Bot{% endblock %}
+{% block title %}{{ client.name }} · Odoo PM Agent{% endblock %}
 
 {% block content %}
-<div class="max-w-3xl">
-  <div class="flex items-baseline justify-between">
+<div class="max-w-4xl">
+  <div class="flex items-start justify-between gap-6">
     <div>
       <h1 class="text-xl font-semibold tracking-tight">{{ client.name }}</h1>
       <p class="mt-1 font-mono text-xs text-slate-400">{{ client.slug }}</p>
     </div>
-    <a href="/clients/{{ client.id }}/edit" class="text-sm text-accent hover:underline">Edit</a>
+    {# The primary action on this page, so it wears a button rather than sitting
+       in the page as a word that happens to be a link. #}
+    <div class="flex shrink-0 items-center gap-2">
+      <a href="/clients/{{ client.id }}/tasks" class="btn-ghost">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>
+        </svg>
+        Tasks
+      </a>
+      <a href="/clients/{{ client.id }}/edit" class="btn-primary">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5Z"/>
+        </svg>
+        Edit client
+      </a>
+    </div>
   </div>
 
-  {# Phase B pages. Linked here because the detail page is where someone lands
-     when they want to know anything about a client. #}
-  <nav class="mt-5 flex flex-wrap gap-2">
-    {% for href, labelled in [
-        ('audit',     'Hygiene audit'),
-        ('census',    'Instance census'),
-        ('knowledge', 'Knowledge base'),
-        ('coverage',  'Coverage map'),
-        ('team',      'Team access')] %}
-    <a href="/clients/{{ client.id }}/{{ href }}"
-       class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[13px]
-              font-medium text-slate-600 hover:border-brand-300 hover:text-brand-700">
-      {{ labelled }}
+  {# Only the knowledge base. The other four — hygiene audit, instance census,
+     coverage map, team access — are diagnostics nothing in the review consumes,
+     and five buttons where one is used makes the one harder to find. Their
+     pages still exist at /clients/<id>/{audit,census,coverage,team} and are
+     reachable by URL; only the links are gone. #}
+  <nav class="mt-5">
+    <a href="/clients/{{ client.id }}/knowledge" class="btn-ghost text-[13px]">
+      Knowledge base
     </a>
-    {% endfor %}
   </nav>
 
-  <dl class="mt-6 grid grid-cols-3 gap-x-6 gap-y-3 rounded border border-slate-200 bg-white p-5 text-sm">
+  <dl class="card mt-6 grid grid-cols-3 gap-x-6 gap-y-3 p-5 text-sm">
     <dt class="text-slate-500">Odoo version</dt>
     <dd class="col-span-2">{{ client.odoo_version }}</dd>
 
@@ -46,17 +57,43 @@
     <dt class="text-slate-500">Name pattern</dt>
     <dd class="col-span-2 font-mono text-xs">{{ client.db_name_pattern }}</dd>
 
-    <dt class="text-slate-500">GitHub</dt>
-    <dd class="col-span-2 font-mono text-xs">{{ client.github or '—' }}</dd>
-
-    <dt class="text-slate-500">Branch mode</dt>
+    <dt class="text-slate-500">Odoo projects</dt>
     <dd class="col-span-2">
-      {{ client.branch_mode }}
-      {% if client.branch_mode == 'shared' %}
-      <span class="ml-1 text-xs text-amber-700">
-        — regressions cannot be attributed to a task
-      </span>
+      {% for cp in client_projects %}
+      <span class="mr-1 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-700">
+        {{ cp.odoo_project_name or 'Project' }}
+        <span class="font-mono text-slate-400">#{{ cp.odoo_project_id }}</span></span>
+      {% else %}
+      <span class="text-xs text-slate-400">none linked — no tasks can be listed</span>
+      {% endfor %}
+    </dd>
+
+    <dt class="text-slate-500">Review stage</dt>
+    <dd class="col-span-2">
+      {% if client.task_stage_name %}
+        <span class="rounded bg-brand-50 px-1.5 py-0.5 text-xs font-medium text-brand-700">
+          {{ client.task_stage_name }}</span>
+        <span class="ml-1 text-xs text-slate-400">matched by name in every project</span>
+      {% else %}
+        <span class="text-xs text-slate-400">any stage</span>
       {% endif %}
+    </dd>
+
+    <dt class="text-slate-500">Repositories</dt>
+    <dd class="col-span-2">
+      {% for r in repos %}
+      <div class="mb-1 flex flex-wrap items-center gap-x-2 text-xs">
+        <a href="{{ r.url }}" target="_blank" rel="noopener"
+           class="font-mono text-slate-700 hover:text-brand-700">{{ r.github }}</a>
+        <span class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-500">{{ r.base_branch }}</span>
+        <span class="text-slate-400">{{ 'shared branch' if r.is_shared else 'per task' }}</span>
+        {% if r.is_shared %}
+        <span class="text-amber-700">— regressions cannot be attributed to a task</span>
+        {% endif %}
+      </div>
+      {% else %}
+      <span class="text-xs text-slate-400">none</span>
+      {% endfor %}
     </dd>
 
     <dt class="text-slate-500">Capabilities</dt>
@@ -69,17 +106,63 @@
     </dd>
   </dl>
 
-  <h2 class="mt-10 text-sm font-semibold">Staging RPC credentials</h2>
+  <h2 class="mt-10 text-sm font-semibold">How the agent reaches this instance</h2>
   <p class="mt-1 text-sm text-slate-600">
-    Used by the census, the pre-flight audit, and the probe. Verified against the live
-    instance before it is stored, and encrypted at rest.
+    One credential, not two. A browser sign-in uses a real password and can do
+    <b>both</b> jobs — take screenshots and read data for assertions. An API key can only
+    read data: Odoo will not let a key open a web session, so it cannot produce a
+    screenshot.
   </p>
 
   {% if cred_error %}
-  <div class="mt-4 rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
+  <div class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-800">
     {{ cred_error }}
   </div>
   {% endif %}
+
+  {# Radio rather than a checkbox: these are alternatives, and only the chosen
+     one's fields are shown so nobody fills in a credential the gate will not use. #}
+  <form method="post" action="/clients/{{ client.id }}/access-mode"
+        class="card mt-4 p-5">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="space-y-3">
+      <label class="flex cursor-pointer items-start gap-3">
+        <input type="radio" name="access_mode" value="browser" class="mt-1"
+               {{ 'checked' if client.access_mode != 'api_key' }}
+               onchange="this.form.submit()">
+        <span>
+          <span class="text-[13.5px] font-medium">Browser sign-in</span>
+          <span class="ml-1.5 rounded bg-brand-50 px-1.5 py-0.5 text-[10px]
+                       font-semibold uppercase tracking-wide text-brand-700">recommended</span>
+          <span class="block text-[12.5px] leading-relaxed text-slate-500">
+            A real password on an account without two-factor. Screenshots and data both.
+            Configure the logins below.
+          </span>
+        </span>
+      </label>
+      <label class="flex cursor-pointer items-start gap-3">
+        <input type="radio" name="access_mode" value="api_key" class="mt-1"
+               {{ 'checked' if client.access_mode == 'api_key' }}
+               onchange="this.form.submit()">
+        <span>
+          <span class="text-[13.5px] font-medium">API key (JSON-RPC)</span>
+          <span class="block text-[12.5px] leading-relaxed text-slate-500">
+            Data only — no screenshots. Choose this when the account must keep
+            two-factor enabled, or when policy forbids storing a password.
+          </span>
+        </span>
+      </label>
+    </div>
+    <noscript>
+      <button class="btn-primary mt-3 text-[13px]">Save choice</button>
+    </noscript>
+  </form>
+
+  {% if client.access_mode == 'api_key' %}
+  <h3 class="mt-8 text-sm font-semibold">Staging API key</h3>
+  <p class="mt-1 text-sm text-slate-600">
+    Verified against the live instance before it is stored, and encrypted at rest.
+  </p>
 
   {% if client.has_credentials %}
   <p class="mt-3 inline-block rounded border border-emerald-600 bg-emerald-50 px-2 py-0.5
@@ -90,17 +173,17 @@
   {% endif %}
 
   <form method="post" action="/clients/{{ client.id }}/credentials"
-        class="mt-4 space-y-4 rounded border border-slate-200 bg-white p-5">
+        class="card mt-4 space-y-4 p-5">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div>
-      <label for="rpc_login" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
+      <label for="rpc_login" class="label">
         Login on the staging instance
       </label>
       <input id="rpc_login" name="rpc_login" type="text" autocomplete="off"
              class="field">
     </div>
     <div>
-      <label for="rpc_api_key" class="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1">
+      <label for="rpc_api_key" class="label">
         API key
       </label>
       <input id="rpc_api_key" name="rpc_api_key" type="password" autocomplete="off"
@@ -108,9 +191,6 @@
       <p class="mt-1.5 text-xs text-slate-500">
         An API key, not a password. Odoo requires one for RPC when the account has 2FA, and it
         can be revoked without changing a password a human also uses.
-        <br>
-        Browser personas for screenshot evidence need real passwords instead — an API key
-        cannot open a web session. Those arrive in phase B.
       </p>
     </div>
     <button type="submit"
@@ -118,5 +198,80 @@
       Verify and store
     </button>
   </form>
+  {% endif %}
+
+  <h2 class="mt-10 text-sm font-semibold">
+    Browser logins
+    {% if client.access_mode != 'api_key' %}
+    <span class="ml-1 rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold
+                 uppercase tracking-wide text-brand-700">in use</span>
+    {% endif %}
+  </h2>
+  <p class="mt-1 text-sm text-slate-600">
+    Real accounts Playwright signs in as to take screenshots. Set on the
+    <a href="/clients/{{ client.id }}/edit" class="text-brand-600 underline underline-offset-2">
+      client form</a>.
+    {% if client.access_mode != 'api_key' %}
+    These also read data for assertions, so no API key is needed.
+    {% endif %}
+  </p>
+  <div class="card mt-3 divide-y divide-slate-100">
+    {% for pr in client_personas %}
+    <div class="flex items-center gap-3 px-4 py-3 text-sm">
+      <span class="w-32 shrink-0 font-mono text-[12px] text-slate-500">{{ pr.key }}</span>
+      <span class="min-w-0 flex-1 truncate">{{ pr.login }}</span>
+      {% if pr.state == 'verified' %}
+      <span class="inline-flex items-center gap-1.5 rounded-md border border-emerald-200
+                   bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800">
+        <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
+          d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z"
+          clip-rule="evenodd"/></svg>
+        Signs in
+      </span>
+      {% elif pr.state == 'failed' %}
+      <span class="inline-flex items-center gap-1.5 rounded-md border border-rose-200
+                   bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-800">
+        <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
+          d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z"
+          clip-rule="evenodd"/></svg>
+        Cannot sign in
+      </span>
+      {% else %}
+      <span class="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px]
+                   font-medium text-slate-500">Not verified yet</span>
+      {% endif %}
+
+      {# The check that moves a persona out of "not verified yet". Without it the
+         badge was permanent and there was no way to tell a typo from a password
+         that simply had not been tried. #}
+      <form method="post"
+            action="/clients/{{ client.id }}/personas/{{ pr.id }}/verify"
+            class="shrink-0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn-ghost whitespace-nowrap text-[12px]"
+                {{ 'disabled' if not pr.has_password }}
+                title="{{ 'No password stored for this login yet.' if not pr.has_password
+                          else 'Open a real web session with this login.' }}">
+          {{ 'Re-check' if pr.state != 'unverified' else 'Verify login' }}
+        </button>
+      </form>
+    </div>
+
+    {# The reason lives on the page, not in a tooltip. "Cannot sign in" without
+       it sends somebody to re-type a password that was never the problem —
+       2FA and a portal-only account both fail here and neither is a typo. #}
+    {% if pr.state == 'failed' and pr.verify_error %}
+    <div class="border-t border-slate-100 bg-rose-50/40 px-4 py-2">
+      <p class="text-[12px] leading-relaxed text-rose-900">
+        <span class="font-medium">{{ pr.login }}</span> — {{ pr.verify_error }}
+      </p>
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="px-4 py-6 text-center text-sm text-slate-500">
+      No browser login yet, so no screenshots can be taken.
+    </p>
+    {% endfor %}
+  </div>
 </div>
 {% endblock %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard · Odoo PM Bot{% endblock %}
+{% block title %}Dashboard · Odoo PM Agent{% endblock %}
 
 {% block content %}
 <div class="flex items-start justify-between gap-6">
@@ -60,7 +60,8 @@
     Nothing can run against
     {% for c in needs_credentials %}<a href="/clients/{{ c.id }}"
       class="font-medium underline underline-offset-2">{{ c.name }}</a>{{ ", " if not loop.last }}{% endfor %}
-    until staging credentials are added.
+    until it can reach its staging instance — either a browser sign-in with a real
+    password, or an API key.
   </p>
 </div>
 {% endif %}

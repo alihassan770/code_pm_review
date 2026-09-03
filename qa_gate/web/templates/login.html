@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Sign in · Odoo PM Bot{% endblock %}
+{% block title %}Sign in · Odoo PM Agent{% endblock %}
 {% block main_class %}min-h-full{% endblock %}
 
 {% block content %}
@@ -16,7 +16,7 @@
       <div class="flex items-center gap-3">
         <span class="grid h-9 w-9 place-items-center rounded-xl bg-white/12 text-sm font-bold
                      text-white ring-1 ring-white/20 backdrop-blur">P</span>
-        <span class="text-[15px] font-semibold tracking-tight text-white">Odoo PM Bot</span>
+        <span class="text-[15px] font-semibold tracking-tight text-white">Odoo PM Agent</span>
       </div>
 
       <div class="max-w-md">
@@ -56,7 +56,7 @@
       <div class="mb-9 flex items-center gap-2.5 lg:hidden">
         <span class="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-b from-brand-500
                      to-brand-700 text-[13px] font-bold text-white">P</span>
-        <span class="text-[15px] font-semibold tracking-tight">Odoo PM Bot</span>
+        <span class="text-[15px] font-semibold tracking-tight">Odoo PM Agent</span>
       </div>
 
       <h1 class="text-[1.6rem] font-semibold tracking-tight text-slate-900">Welcome back</h1>
@@ -103,6 +103,20 @@
           <input id="password" name="password" type="password" autocomplete="current-password"
                  required placeholder="••••••••••••" class="field">
         </div>
+
+        {% if offer_service_credential %}
+        <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200
+                      bg-slate-50/70 px-3.5 py-2.5">
+          <input type="checkbox" name="use_for_service" checked
+                 class="mt-0.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+          <span class="text-[12.5px] leading-relaxed text-slate-600">
+            <span class="font-medium text-slate-800">Also use this to read Odoo tasks.</span>
+            Your credential is normally used to sign you in and then discarded. Tick this and it
+            is stored, encrypted, so scheduled runs can read tasks without a person present.
+            Administrators only; revoke the API key in Odoo to revoke it here.
+          </span>
+        </label>
+        {% endif %}
 
         <button type="submit" class="btn-primary w-full">
           Sign in

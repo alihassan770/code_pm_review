@@ -8,6 +8,18 @@
 
 {% block content %}
 <div class="max-w-4xl">
+  {# Every sub-page is reached from the client page, so it needs the way home.
+     A breadcrumb rather than browser-back: people arrive here from a link in a
+     table as often as from the client page itself. #}
+  <a href="/clients/{{ client.id }}"
+     class="mb-4 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[13px]
+            font-medium text-brand-600 hover:bg-brand-50 hover:text-brand-700">
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 18l-6-6 6-6"/>
+    </svg>
+    Back to {{ client.name }}
+  </a>
   <div class="flex items-baseline justify-between">
     <div>
       <h1 class="text-xl font-semibold tracking-tight">{{ client.name }} — instance census</h1>
@@ -16,8 +28,7 @@
       </p>
     </div>
     <div class="flex items-center gap-4 text-sm">
-      <a href="/clients/{{ client.id }}" class="text-accent hover:underline">Client</a>
-      <a href="/clients/{{ client.id }}/audit" class="text-accent hover:underline">Audit</a>
+            <a href="/clients/{{ client.id }}/audit" class="btn-ghost text-[13px]">Audit</a>
     </div>
   </div>
 

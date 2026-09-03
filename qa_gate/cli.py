@@ -12,7 +12,7 @@ from . import db, paths
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="qa-gate", description="Odoo PM Bot control plane.")
+        prog="qa-gate", description="Odoo PM Agent control plane.")
     sub = parser.add_subparsers(dest="command")
 
     serve = sub.add_parser("serve", help="run the web app (default)")
@@ -39,6 +39,15 @@ def main(argv: list[str] | None = None) -> int:
     ident.add_argument("--url", required=True)
     ident.add_argument("--db", required=True)
 
+    grant = sub.add_parser(
+        "grant-admin",
+        help="make an existing user an administrator of this app",
+        description="Administrator here is not the same as Odoo's base.group_system: "
+                    "the person who runs the gate is often not an Odoo sysadmin. The "
+                    "first user to sign in is promoted automatically; this is how to "
+                    "promote anyone after that.")
+    grant.add_argument("login")
+
     audit = sub.add_parser(
         "audit",
         help="run the read-only hygiene audit against client staging instances",
@@ -60,6 +69,15 @@ def main(argv: list[str] | None = None) -> int:
     know.add_argument("slug", nargs="*",
                       help="client slugs; omit to sync every client with a GitHub repo")
 
+    sub.add_parser(
+        "leftovers",
+        help="list records reviews created and could not remove",
+        description="The ledger in review_fixtures exists so that 'did a review "
+                    "leave anything in a client's database?' is an answerable "
+                    "question. This answers it. Nothing is deleted — removing "
+                    "records from a client's instance on a timer is exactly the "
+                    "unattended write the gate is careful about.")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=getattr(args, "log_level", "info").upper(),
@@ -70,13 +88,43 @@ def main(argv: list[str] | None = None) -> int:
         return _migrate()
     if args.command == "check":
         return _check()
+    if args.command == "grant-admin":
+        from . import users as users_mod
+        db.init_pool(config_mod.load().database_url)
+        if users_mod.grant_admin(args.login):
+            print(f"  {args.login} is now an administrator.")
+            return 0
+        print(f"  No user with login {args.login!r}. They must sign in once first.")
+        return 1
     if args.command == "set-identity":
         return _set_identity(args.url, args.db)
     if args.command == "audit":
         return _audit(args)
     if args.command == "knowledge":
         return _knowledge(args)
+    if args.command == "leftovers":
+        return _leftovers()
     return _serve(args)
+
+
+def _leftovers() -> int:
+    from . import fixtures as fixtures_mod
+
+    cfg = config_mod.load()
+    db.init_pool(cfg.database_url)
+    rows = fixtures_mod.orphans()
+    if not rows:
+        print("  No review left anything behind.")
+        return 0
+    print(f"  {len(rows)} record(s) created by a finished run and not removed:\n")
+    for r in rows:
+        print(f"    {r['slug']:<20} {r['model']}#{r['res_id']}  (run {r['run_id']}, "
+              f"{r['state']})")
+        if r["remove_error"]:
+            print(f"        refused: {r['remove_error'][:110]}")
+    print("\n  Remove them in Odoo by hand; nothing here deletes from a client "
+          "instance unattended.")
+    return 1
 
 
 def _knowledge(args) -> int:
@@ -89,6 +137,7 @@ def _knowledge(args) -> int:
     """
     from . import clients as clients_mod
     from . import github, repo_sync
+    from . import knowledge as knowledge_mod
 
     cfg = config_mod.load()
     db.init_pool(cfg.database_url)
@@ -126,6 +175,8 @@ def _knowledge(args) -> int:
         print(f"\n  {client.slug:<24} {snap.github}@{snap.short_sha}")
         print(f"      {len(snap.modules)} module(s), {len(snap.scenarios)} scenario(s), "
               f"{len(k.invariants)} invariant(s), {len(k.danger_zones)} danger zone(s)")
+        if not k.present:
+            print(f"      [note]  no {knowledge_mod.PATH} in this branch")
         for entry in k.stale():
             print(f"      [stale] {entry.id} — review_after {entry.review_after} has passed")
         for scenario in snap.scenario_errors:
@@ -271,7 +322,7 @@ def _check() -> int:
 def _banner(cfg, host: str, port: int) -> None:
     lines = [
         "",
-        "  Odoo PM Bot",
+        "  Odoo PM Agent",
         f"  Listening on  http://{host}:{port}",
         f"  Config        {cfg.path}",
         f"  Database      {cfg.database_url}",

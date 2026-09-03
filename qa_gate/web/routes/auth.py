@@ -12,7 +12,7 @@ import logging
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
-from ... import clients, config as config_mod, sessions, users
+from ... import app_secrets, clients, config as config_mod, sessions, users
 from ...odoo_client import OdooAuthError, OdooClient, OdooError
 from ...sessions import COOKIE_NAME
 from .. import deps
@@ -34,6 +34,10 @@ def login_form(request: Request, next: str | None = None):
         "odoo_url": cfg.odoo.url,
         "odoo_db": cfg.odoo.db,
         "can_reconfigure": setup_routes.may_configure(request),
+        # Offering this here rather than only on the settings page is the whole
+        # point: this request is the one moment the app legitimately holds a
+        # working credential, because login uses it and then discards it.
+        "offer_service_credential": not app_secrets.is_configured(app_secrets.IDENTITY_RPC),
         "error": None,
     })
 
@@ -44,7 +48,9 @@ def login_submit(
     login: str = Form(""),
     password: str = Form(""),
     next: str = Form("/dashboard"),
+    use_for_service: str = Form(""),
 ):
+    form_wants_service = use_for_service == "on"
     cfg = request.app.state.config
     if not cfg.odoo.configured:
         return RedirectResponse("/setup", status_code=303)
@@ -61,6 +67,7 @@ def login_submit(
             "next": deps.safe_next(next), "odoo_url": cfg.odoo.url,
             "odoo_db": cfg.odoo.db, "error": message, "login_value": login,
             "connection_error": connection,
+            "offer_service_credential": not app_secrets.is_configured(app_secrets.IDENTITY_RPC),
             "can_reconfigure": setup_routes.may_configure(request),
         }, status_code=200)
 
@@ -77,6 +84,16 @@ def login_submit(
         return fail(str(exc), connection=True)
 
     user = users.upsert_from_odoo(odoo_user)
+
+    # Adopt the credential as the background service account, but only when the
+    # person explicitly asked, only if they are an admin, and only when none is
+    # set. It is stored encrypted like any other; revoke the API key in Odoo to
+    # revoke it here.
+    if (form_wants_service and user.is_admin
+            and not app_secrets.is_configured(app_secrets.IDENTITY_RPC)):
+        app_secrets.set_(app_secrets.IDENTITY_RPC, login=login.strip(), secret=password,
+                         secret_key=cfg.secret_key, updated_by=user.id)
+        log.info("Service credential adopted from %s's login", user.login)
     token, _ = sessions.create(
         user, cfg.session_hours,
         ip=_client_ip(request), user_agent=request.headers.get("user-agent"),

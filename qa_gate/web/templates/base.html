@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Odoo PM Bot{% endblock %}</title>
+<title>{% block title %}Odoo PM Agent{% endblock %}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -57,13 +57,32 @@
   }
   .btn-primary:hover { filter:brightness(1.05); }
   .btn-primary:active { transform:translateY(1px); }
+  /* Secondary actions still wear the brand colour, just tinted rather than
+     solid — so they read as ours without every button competing with the one
+     primary action on the screen. */
   .btn-ghost {
     display:inline-flex; align-items:center; gap:.4rem; border-radius:.6rem;
-    border:1px solid #e2e8f0; background:#fff; padding:.55rem .9rem;
-    font-size:.875rem; font-weight:500; color:#334155; transition:background .12s;
+    border:1px solid #ddd6fe; background:#f5f3ff; padding:.55rem .9rem;
+    font-size:.875rem; font-weight:600; color:#6d28d9; transition:background .12s, border-color .12s;
   }
-  .btn-ghost:hover { background:#f8fafc; }
+  .btn-ghost:hover { background:#ede9fe; border-color:#c4b5fd; }
+  .btn-ghost:active { transform:translateY(1px); }
   .card { border:1px solid #e2e8f0; border-radius:.85rem; background:#fff; }
+  /* Just enough typography for HTML pasted out of Odoo. Not a full prose
+     framework — descriptions are short and the surrounding page sets the tone. */
+  .prose-task p { margin: .5rem 0; }
+  .prose-task ul, .prose-task ol { margin: .5rem 0; padding-left: 1.25rem; }
+  .prose-task ul { list-style: disc; }
+  .prose-task ol { list-style: decimal; }
+  .prose-task li { margin: .15rem 0; }
+  .prose-task h1, .prose-task h2, .prose-task h3 { font-weight: 600; margin: .75rem 0 .25rem; }
+  .prose-task a { color: #6d28d9; text-decoration: underline; text-underline-offset: 2px; }
+  .prose-task img { max-width: 100%; height: auto; border-radius: .5rem; margin: .5rem 0; }
+  .prose-task table { border-collapse: collapse; margin: .5rem 0; font-size: .95em; }
+  .prose-task td, .prose-task th { border: 1px solid #e2e8f0; padding: .3rem .5rem; }
+  .prose-task pre { background: #f8fafc; padding: .6rem .8rem; border-radius: .5rem;
+                    overflow-x: auto; font-size: .92em; }
+  .prose-task code { font-family: 'JetBrains Mono', monospace; font-size: .92em; }
   .grid-veil {
     background-image:
       linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
@@ -90,17 +109,36 @@
   ('/dashboard', 'Dashboard',
    'M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5'),
   ('/clients', 'Clients',
-   'M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM20 19v-1.5a3.5 3.5 0 0 0-2.6-3.4M15.5 4.2a3.5 3.5 0 0 1 0 6.6'),
-  ('/audit', 'Hygiene audit',
-   'M9 12.5l2 2 4-4M12 3l7.5 3.4v5.2c0 4.3-3.1 8.3-7.5 9.4-4.4-1.1-7.5-5.1-7.5-9.4V6.4L12 3Z')
+   'M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM20 19v-1.5a3.5 3.5 0 0 0-2.6-3.4M15.5 4.2a3.5 3.5 0 0 1 0 6.6')
 ] %}
+{# The hygiene audit (UC-16) is deliberately NOT in the nav. Nothing in the
+   review engine consumes it: writes are gated on `database.is_neutralized`,
+   which is Odoo's own flag and stronger than any check we could make. The audit
+   still matters for a staging instance that is NOT neutralized — Cloudpepper,
+   self-hosted — where it is the only way to establish that live payment
+   providers and outbound mail are off. So the page and `qa-gate audit` both
+   remain; only the menu entry is gone, because a link nobody needs on every
+   page is a link that makes the ones they do need harder to find.
+   Restore by putting ('/audit', 'Hygiene audit', 'M9 12.5l2 2 4-4M12 3l7.5
+   3.4v5.2c0 4.3-3.1 8.3-7.5 9.4-4.4-1.1-7.5-5.1-7.5-9.4V6.4L12 3Z') back. #}
+{# Settings changes who can log in and holds the credential that reads every
+   task, so it is an administrator's page and only shown to one. #}
+{% if user.is_admin %}
+  {% set nav = nav + [('/settings', 'Settings',
+     'M12 15a3 3 0 100-6 3 3 0 000 6ZM19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2v.1a2 2 0 11-4 0v-.2a1.7 1.7 0 00-2.9-1.1l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00-1.2-2.9H3a2 2 0 110-4h.2a1.7 1.7 0 001.1-2.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 002.9-1.2V3a2 2 0 114 0v.2a1.7 1.7 0 002.9 1.1l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 001.2 2.9H21a2 2 0 110 4h-.2a1.7 1.7 0 00-1.4 1Z')] %}
+{% endif %}
 
 <div class="flex min-h-screen">
 
   {# ---- sidebar (lg and up) ------------------------------------------------
        Deliberately the same dark violet as the sign-in panel, so the surface
        you log in through becomes the surface you work in. #}
-  <aside class="relative hidden w-60 shrink-0 overflow-hidden bg-brand-950 lg:flex lg:flex-col">
+  {# `sticky top-0 h-screen` pins the panel to the viewport. Without it the
+     aside stretches to the full document height — it is a flex child of a
+     min-h-screen row — and the sign-out block, pinned to the bottom of the
+     aside, ends up at the bottom of the *page* instead of the screen. #}
+  <aside class="sticky top-0 hidden h-screen w-60 shrink-0 overflow-hidden
+                bg-brand-950 lg:flex lg:flex-col">
     <div class="absolute inset-0 bg-gradient-to-b from-brand-800 via-brand-900 to-brand-950"></div>
     <div class="grid-veil absolute inset-0"></div>
     <div class="absolute -left-16 -top-20 h-64 w-64 rounded-full bg-brand-500/20 blur-3xl"></div>
@@ -109,10 +147,10 @@
       <a href="/dashboard" class="flex items-center gap-2.5 px-5 py-5">
         <span class="grid h-8 w-8 place-items-center rounded-xl bg-white/12 text-[13px]
                      font-bold text-white ring-1 ring-white/20">P</span>
-        <span class="text-[14.5px] font-semibold tracking-tight text-white">Odoo PM Bot</span>
+        <span class="text-[14.5px] font-semibold tracking-tight text-white">Odoo PM Agent</span>
       </a>
 
-      <nav class="mt-1 space-y-0.5 px-3">
+      <nav class="mt-1 flex-1 space-y-0.5 overflow-y-auto px-3">
         {% for href, labelled, d in nav %}
         <a href="{{ href }}" class="nav-link {{ 'is-active' if path.startswith(href) }}">
           <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -124,16 +162,7 @@
         {% endfor %}
       </nav>
 
-      <div class="mt-auto px-3 pb-4">
-        <div class="mb-2 px-2">
-          <p class="text-[10px] font-semibold uppercase tracking-[.12em] text-brand-300/40">
-            Phase A of I
-          </p>
-          <p class="mt-1 text-[11.5px] leading-relaxed text-brand-100/40">
-            App shell. Census and audit arrive in phase B.
-          </p>
-        </div>
-
+      <div class="shrink-0 px-3 pb-4">
         <div class="flex items-center gap-2.5 rounded-xl bg-white/[.07] px-2.5 py-2">
           <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-400/25
                        text-[11px] font-semibold text-white">{{ user.name[:1]|upper }}</span>
@@ -166,7 +195,7 @@
         <a href="/dashboard" class="flex items-center gap-2">
           <span class="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-b
                        from-brand-500 to-brand-700 text-[12px] font-bold text-white">P</span>
-          <span class="text-[14px] font-semibold tracking-tight">Odoo PM Bot</span>
+          <span class="text-[14px] font-semibold tracking-tight">Odoo PM Agent</span>
         </a>
         <nav class="flex items-center gap-1 text-sm">
           {% for href, labelled, d in nav %}
