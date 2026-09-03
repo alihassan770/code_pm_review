@@ -81,6 +81,23 @@ def grant_admin(login: str) -> bool:
         "UPDATE users SET is_admin = true WHERE login = %s", (login.strip(),)))
 
 
+def set_admin(user_id: int, admin: bool) -> None:
+    """Move one person between the two roles.
+
+    The caller is responsible for refusing to demote the last administrator,
+    because it is the caller that can explain why. See
+    `web/routes/settings.py:set_role`.
+    """
+    db.execute("UPDATE users SET is_admin = %s WHERE id = %s", (admin, user_id))
+
+
+def admin_count() -> int:
+    """How many administrators exist, for the last-administrator guard."""
+    row = db.query_one(
+        "SELECT count(*) AS n FROM users WHERE is_admin AND coalesce(active, true)")
+    return int(row["n"]) if row else 0
+
+
 def get(user_id: int) -> User | None:
     row = db.query_one("SELECT * FROM users WHERE id = %s", (user_id,))
     return User.from_row(row) if row else None

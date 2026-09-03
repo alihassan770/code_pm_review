@@ -58,7 +58,7 @@
   .btn-primary:hover { filter:brightness(1.05); }
   .btn-primary:active { transform:translateY(1px); }
   /* Secondary actions still wear the brand colour, just tinted rather than
-     solid — so they read as ours without every button competing with the one
+     solid, so they read as ours without every button competing with the one
      primary action on the screen. */
   .btn-ghost {
     display:inline-flex; align-items:center; gap:.4rem; border-radius:.6rem;
@@ -68,8 +68,82 @@
   .btn-ghost:hover { background:#ede9fe; border-color:#c4b5fd; }
   .btn-ghost:active { transform:translateY(1px); }
   .card { border:1px solid #e2e8f0; border-radius:.85rem; background:#fff; }
+
+  /* ---- motion and depth -------------------------------------------------
+     Kept small on purpose. Movement here is feedback, not decoration: a tile
+     that lifts under the cursor says it is pressable, and a list that arrives
+     in order says which row came first. Anything longer than a fifth of a
+     second stops being feedback and starts being a wait.
+
+     All of it is behind `prefers-reduced-motion` at the bottom of this block,
+     because for some people this kind of movement is not a nicety to turn off,
+     it is a symptom trigger. */
+
+  /* A card you can click. Lifts and warms its border; the shadow does the
+     work so the layout never reflows. */
+  .card-lift { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+  .card-lift:hover {
+    transform: translateY(-2px);
+    border-color:#ddd6fe;
+    box-shadow:0 1px 2px rgba(16,12,32,.04), 0 18px 32px -22px rgba(76,29,149,.45);
+  }
+
+  /* A tile's coloured top edge. A hairline rather than a filled header: it
+     gives each number an identity at a glance without turning the row into
+     four competing blocks of colour. */
+  .tile { position:relative; overflow:hidden; }
+  .tile::before {
+    content:""; position:absolute; inset:0 0 auto 0; height:3px;
+    background:var(--tile-accent, #8b5cf6);
+    opacity:.9;
+  }
+
+  /* Entrance. `rise` on a container staggers its children by their index,
+     which is set inline as --i. */
+  @keyframes rise {
+    from { opacity:0; transform:translateY(8px); }
+    to   { opacity:1; transform:none; }
+  }
+  /* `backwards`, NOT `both`. With `both` the animation keeps applying its final
+     keyframe for ever, and an animation-applied value beats an ordinary rule,
+     so `to { transform:none }` silently won against `.card-lift:hover`'s
+     translate and the hover lift did nothing. `backwards` applies the opening
+     frame before the animation starts and then gets out of the way. */
+  .rise { animation: rise .38s cubic-bezier(.22,1,.36,1) backwards;
+          animation-delay: calc(var(--i, 0) * 55ms); }
+
+  /* The proportion bar on the dashboard. Grows from nothing on load so the
+     split registers as a quantity rather than as a static stripe. */
+  @keyframes grow-x { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+  .grow-x { transform-origin:left; animation: grow-x .6s cubic-bezier(.22,1,.36,1) backwards;
+            animation-delay: calc(var(--i, 0) * 90ms + 120ms); }
+
+  /* A live run's pulse. Slower and weaker than Tailwind's `animate-pulse`,
+     which is tuned for skeleton loaders and is too insistent for a status dot
+     that may sit on screen for twenty minutes. */
+  @keyframes breathe { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+  .breathe { animation: breathe 2.4s ease-in-out infinite; }
+
+  /* Skeleton shimmer. A moving highlight over a grey block, which reads as
+     "this is coming" where a spinner only reads as "wait". The gradient is on
+     the background so it costs no extra element. */
+  @keyframes shimmer { from { background-position: -140% 0; }
+                       to   { background-position:  240% 0; } }
+  .shimmer {
+    background-image:linear-gradient(90deg,
+      rgba(148,163,184,0) 0%, rgba(148,163,184,.22) 45%,
+      rgba(148,163,184,0) 90%);
+    background-size:60% 100%; background-repeat:no-repeat;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rise, .grow-x, .breathe, .shimmer { animation: none; }
+    .card-lift { transition: border-color .18s ease; }
+    .card-lift:hover { transform: none; }
+  }
   /* Just enough typography for HTML pasted out of Odoo. Not a full prose
-     framework — descriptions are short and the surrounding page sets the tone. */
+     framework, descriptions are short and the surrounding page sets the tone. */
   .prose-task p { margin: .5rem 0; }
   .prose-task ul, .prose-task ol { margin: .5rem 0; padding-left: 1.25rem; }
   .prose-task ul { list-style: disc; }
@@ -114,8 +188,8 @@
 {# The hygiene audit (UC-16) is deliberately NOT in the nav. Nothing in the
    review engine consumes it: writes are gated on `database.is_neutralized`,
    which is Odoo's own flag and stronger than any check we could make. The audit
-   still matters for a staging instance that is NOT neutralized — Cloudpepper,
-   self-hosted — where it is the only way to establish that live payment
+   still matters for a staging instance that is NOT neutralized, Cloudpepper,
+   self-hosted, where it is the only way to establish that live payment
    providers and outbound mail are off. So the page and `qa-gate audit` both
    remain; only the menu entry is gone, because a link nobody needs on every
    page is a link that makes the ones they do need harder to find.
@@ -134,8 +208,8 @@
        Deliberately the same dark violet as the sign-in panel, so the surface
        you log in through becomes the surface you work in. #}
   {# `sticky top-0 h-screen` pins the panel to the viewport. Without it the
-     aside stretches to the full document height — it is a flex child of a
-     min-h-screen row — and the sign-out block, pinned to the bottom of the
+     aside stretches to the full document height, it is a flex child of a
+     min-h-screen row, and the sign-out block, pinned to the bottom of the
      aside, ends up at the bottom of the *page* instead of the screen. #}
   <aside class="sticky top-0 hidden h-screen w-60 shrink-0 overflow-hidden
                 bg-brand-950 lg:flex lg:flex-col">

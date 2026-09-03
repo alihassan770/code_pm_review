@@ -58,13 +58,11 @@ def _project_choices(request) -> tuple[list, str]:
     """The projects a person can pick from, or why there are none.
 
     Offered as a list because asking someone to type an id means asking them to
-    go and find it in another tab first. The id stays acceptable — a project
-    that is archived, or newer than this page, still has to be reachable — but
-    it is no longer the only way in.
+    go and find it in another tab first.
     """
     if not app_secrets.is_configured(app_secrets.IDENTITY_RPC):
         return [], ("No Odoo service credential is set, so the project list cannot "
-                    "be loaded. You can still enter ids by hand.")
+                    "be loaded.")
     try:
         found = projects.connect(request.app.state.config).search_projects(
             "", limit=MAX_PROJECT_CHOICES)
@@ -242,8 +240,10 @@ async def create_client(request: Request):
     if form.get("action") == "lookup":
         return deps.render(request, "client_form.html", ctx)
 
-    slug = (form.get("slug") or "").strip().lower()
     name = (form.get("name") or "").strip()
+    # Derived, not typed. The form stopped asking for a handle; it is still what
+    # the CLI and the log lines use, so it is made here from the name.
+    slug = (form.get("slug") or "").strip().lower() or derive_slug(name)
     error = _validate(slug, name, form) or _check_repo_rows(form)
     if error:
         ctx["error"] = error
@@ -344,7 +344,7 @@ async def update_client(request: Request, client_id: int):
         return deps.render(request, "client_form.html", ctx)
 
     clients_mod.update(client_id, name=name,
-                       active=form.get("active") == "on", **_fields(form))
+                       active=form.get("active") == "on", **_fields(form, client))
     cfg = request.app.state.config
     related_error = _save_related(client_id, form, ctx,
                                   secret_key=cfg.secret_key, user_id=session.user.id)
@@ -488,6 +488,24 @@ async def verify_persona(request: Request, client_id: int, persona_id: int):
 
 # ---- validation ------------------------------------------------------------
 
+def derive_slug(name: str) -> str:
+    """A command-line handle from the client's name.
+
+    The form no longer asks for one. It exists for `qa-gate audit <slug>` and for
+    tagging log lines, which is a reason to have it and not a reason to make
+    somebody think one up.
+    """
+    base = re.sub(r"[^a-z0-9]+", "", (name or "").lower())[:49]
+    if len(base) < 2:
+        base = f"client{base}"
+    candidate, n = base, 2
+    while clients_mod.get_by_slug(candidate):
+        suffix = str(n)
+        candidate = base[: 49 - len(suffix)] + suffix
+        n += 1
+    return candidate
+
+
 def _validate(slug: str, name: str, form: dict, *, slug_required: bool = True) -> str | None:
     if slug_required and not SLUG_RE.match(slug or ""):
         return ("Slug must be lowercase letters, numbers, hyphens or underscores, "
@@ -500,13 +518,23 @@ def _validate(slug: str, name: str, form: dict, *, slug_required: bool = True) -
     return None
 
 
-def _fields(form: dict) -> dict:
+def _fields(form: dict, existing=None) -> dict:
+    """The client's own columns, from the form.
+
+    `existing` matters for fields the form no longer shows. The database name
+    pattern was removed from the UI, and without this an edit would send nothing
+    and silently reset a stored pattern to the default on every save. A field
+    that has left the form must keep its value, not acquire a new one.
+    """
+    keep = lambda key, default: (                       # noqa: E731
+        form.get(key) if form.get(key) is not None
+        else (getattr(existing, key, None) or default))
     return {
         "odoo_version": form.get("odoo_version", "17.0"),
         "hosting_platform": form.get("hosting_platform", "other"),
         "staging_url": form.get("staging_url", ""),
         "staging_db": form.get("staging_db", ""),
-        "db_name_pattern": form.get("db_name_pattern", "%_staging"),
-        "branch_mode": form.get("branch_mode", "per_task"),
-        "base_branch": form.get("base_branch", "main"),
+        "db_name_pattern": keep("db_name_pattern", "%_staging"),
+        "branch_mode": keep("branch_mode", "per_task"),
+        "base_branch": keep("base_branch", "main"),
     }

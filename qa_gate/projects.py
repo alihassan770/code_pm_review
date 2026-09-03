@@ -286,7 +286,46 @@ class Identity:
 
     # ---- writing back ------------------------------------------------------
 
-    def post_note(self, task_id: int, body_html: str) -> int:
+    @staticmethod
+    def _message_id(raw) -> int:
+        """The id of the message that was posted, however Odoo phrased it.
+
+        A list on every version we support, because the server turns the
+        returned recordset into `.ids`. Handled rather than assumed, since a
+        future version returning a bare id would otherwise break the other way,
+        and the id is only used for logging: refusing to parse it must never
+        cost a note that was posted successfully.
+        """
+        if isinstance(raw, (list, tuple)):
+            raw = raw[0] if raw else 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            log.info("message_post returned %r, which is not an id", raw)
+            return 0
+
+    def can_post_html(self) -> bool:
+        """Whether this credential's HTML would survive `message_post`.
+
+        `mail_thread.message_post` escapes a plain string body, and the only
+        RPC-reachable escape hatch, `body_is_html=True`, is honoured **only for
+        an internal user**:
+
+            if body_is_html and self.env.user._is_internal():
+
+        A portal service account therefore cannot post formatted text at all,
+        and sending it markup produces a note reading `<p><b>PM REVIEW SUMMARY`
+        as literal characters. So this is asked rather than assumed, and a
+        failure to answer means plain text, which is always readable.
+        """
+        try:
+            rows = self.read("res.users", "read", [[self.uid]], {"fields": ["share"]})
+        except (OdooError, OdooAuthError) as exc:
+            log.info("could not read the service account's share flag: %s", exc)
+            return False
+        return bool(rows) and not rows[0].get("share", True)
+
+    def post_note(self, task_id: int, body_html: str, *, is_html: bool = False) -> int:
         """Log an internal note on a task's chatter. Returns the message id.
 
         **A log note, never a message.** Odoo's chatter has two kinds of post and
@@ -303,22 +342,36 @@ class Identity:
         moved between versions. `message_type='notification'` with no subtype
         also lands as a note on 17 through 19, so a version that rejects the
         first form still posts rather than losing the summary.
+
+        **The return value is a list, not an id.** `message_post` returns a
+        `mail.message` record, and `odoo/service/model.py` serialises any
+        returned recordset to `result.ids` before it leaves the server. So this
+        gets `[1234]` back and `int()` on it raised
+
+            int() argument must be a string, a bytes-like object or a real
+            number, not 'list'
+
+        which surfaced as "the summary could not be posted" on a run where the
+        note had in fact been posted a moment earlier. The write had already
+        happened; only our reading of the answer failed.
         """
         body = (body_html or "").strip()
         if not body:
             raise OdooError("Refusing to post an empty note.")
         try:
-            return int(self.read(
+            return self._message_id(self.read(
                 TASK_MODEL, "message_post", [[int(task_id)]],
                 {"body": body, "message_type": "comment",
-                 "subtype_xmlid": "mail.mt_note"},
+                 "subtype_xmlid": "mail.mt_note",
+                 **({"body_is_html": True} if is_html else {})},
             ))
         except (OdooError, OdooAuthError) as exc:
             log.info("message_post with an explicit subtype failed on task %s "
                      "(%s); retrying as a plain notification", task_id, exc)
-            return int(self.read(
+            return self._message_id(self.read(
                 TASK_MODEL, "message_post", [[int(task_id)]],
-                {"body": body, "message_type": "notification"},
+                {"body": body, "message_type": "notification",
+                 **({"body_is_html": True} if is_html else {})},
             ))
 
     def task_counts_by_stage(self, project_id: int) -> dict[int, int]:

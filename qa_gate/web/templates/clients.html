@@ -30,7 +30,7 @@
           <a href="/clients/{{ c.id }}" class="font-medium text-accent hover:underline">{{ c.name }}</a>
           <div class="font-mono text-xs text-slate-400">{{ c.slug }}</div>
         </td>
-        <td class="px-4 py-2.5 font-mono text-xs text-slate-500">{{ c.github or '—' }}</td>
+        <td class="px-4 py-2.5 font-mono text-xs text-slate-500">{{ c.github or '-' }}</td>
         <td class="px-4 py-2.5 text-slate-600">{{ c.odoo_version }}</td>
         <td class="px-4 py-2.5 text-slate-600">{{ c.hosting_label }}</td>
         <td class="px-4 py-2.5">

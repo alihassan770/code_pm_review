@@ -47,6 +47,7 @@
 {%- endmacro %}
 
 {% block content %}
+{% set gdone_hdr = groups|selectattr('state','equalto','done')|list|length %}
 <div class="max-w-3xl">
   <a href="/clients/{{ client.id }}/tasks"
      class="mb-4 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[13px]
@@ -76,15 +77,37 @@
       </p>
     </div>
 
+    {# The badge shows the VERDICT once there is one, not the run state.
+       `done` means the pipeline finished, which on a run where every check
+       failed is a green badge saying DONE beside a red panel saying fail. Two
+       true statements that read as a contradiction, and the green one is the
+       larger and the higher up, so it wins.
+
+       The state is still shown for a run that has not reached a verdict, where
+       it is the only thing there is to say. #}
     {% set badge = {'queued':'bg-slate-100 text-slate-700 ring-slate-200',
                     'running':'bg-brand-50 text-brand-700 ring-brand-200',
                     'paused':'bg-amber-50 text-amber-800 ring-amber-200',
                     'done':'bg-emerald-50 text-emerald-800 ring-emerald-200',
                     'cancelled':'bg-slate-100 text-slate-600 ring-slate-200',
                     'failed':'bg-rose-50 text-rose-800 ring-rose-200'} %}
+    {% set vbadge = {'pass':('bg-emerald-50 text-emerald-800 ring-emerald-200', 'pass'),
+                     'partial':('bg-amber-50 text-amber-900 ring-amber-200', 'partial'),
+                     'fail':('bg-rose-50 text-rose-800 ring-rose-200', 'fail')} %}
+    {% if run.verdict and run.state == 'done' %}
+    {% set style, word = vbadge.get(run.verdict,
+         ('bg-slate-100 text-slate-700 ring-slate-200', run.verdict)) %}
+    {% elif run.state == 'done' %}
+    {# Finished, nothing verified. Not a success, and the emerald "done" would
+       say otherwise. #}
+    {% set style, word = 'bg-slate-100 text-slate-700 ring-slate-300', 'no verdict' %}
+    {% else %}
+    {% set style, word = badge.get(run.state,
+         'bg-slate-100 text-slate-700 ring-slate-200'), run.state %}
+    {% endif %}
     <span class="shrink-0 rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase
-                 tracking-wide ring-1 {{ badge.get(run.state, 'bg-slate-100 text-slate-700 ring-slate-200') }}">
-      {{ run.state }}{% if run.state in ('queued','running') %} …{% endif %}
+                 tracking-wide ring-1 {{ style }}">
+      {{ word }}{% if run.state in ('queued','running') %} …{% endif %}
     </span>
   </div>
 
@@ -123,7 +146,7 @@
       Auto-refresh paused while you type
     </span>
     <span class="text-[12px] text-slate-500">
-      {{ run.progress[0] }} of {{ run.progress[1] }} phases complete
+      {{ gdone_hdr }} of {{ groups|length }} steps complete
       {%- if total_secs %} · {{ secs(total_secs) }} total{% endif %}
       {% if run.state == 'paused' %} · paused at <span class="font-mono">{{ run.phase }}</span>{% endif %}
     </span>
@@ -148,61 +171,86 @@
   {% set done_map = {} %}
   {% for s in run.steps %}{% set _ = done_map.update({s.phase: s}) %}{% endfor %}
 
+  {# A finished run with no verdict is not a pass. It happens when every check
+     was blocked, so nothing was actually verified, and showing only the state
+     badge ("Done") reads as success. Say what happened instead. #}
+  {% if not run.verdict and run.state == 'done' %}
+  {% set sm = done_map.get('summarise') %}
+  <div class="mt-5 rounded-xl border border-slate-300 bg-slate-50 px-4 py-3">
+    <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-600">No verdict</p>
+    <p class="mt-0.5 text-[15px] font-semibold text-slate-800">Nothing could be checked</p>
+    <p class="mt-1 text-[13px] leading-relaxed text-slate-700">
+      {{ (sm.detail.get('note') if sm and sm.detail else '')
+         or 'Every check needed a record that does not exist on this instance, so
+             the run finished without verifying anything.' }}
+    </p>
+  </div>
+  {% endif %}
+
+
   {#
     A segmented ring, one arc per phase, clockwise in pipeline order.
 
     Deliberately NOT a pie. A pie encodes part-of-a-whole magnitude, and these
-    phases are neither equal nor a composition — `execute` takes minutes while
+    phases are neither equal nor a composition, `execute` takes minutes while
     `verdict` is arithmetic. Sizing slices by anything real would make the
     picture about duration; sizing them equally would be a lie dressed as data.
     What actually matters is *order* and *state per step*, which a segmented
     ring shows and a pie destroys.
 
     Every arc is paired with its name in the list beside it. Colour carries no
-    meaning on its own here — a reviewer who cannot separate the emerald from
+    meaning on its own here, a reviewer who cannot separate the emerald from
     the violet still reads the same page.
   #}
   {% set r = 54 %}
   {% set circ = 2 * 3.14159265 * r %}
-  {% set seg = circ / phases|length %}
+  {% set gdone = groups|selectattr('state','equalto','done')|list|length %}
+  {% set seg = circ / groups|length %}
   {% set gap = 5 %}
 
   <div class="card mt-6 flex flex-col items-center gap-6 p-5 sm:flex-row sm:items-center">
     <div class="relative shrink-0">
       <svg viewBox="0 0 140 140" class="h-36 w-36 -rotate-90" role="img"
-           aria-label="{{ run.progress[0] }} of {{ run.progress[1] }} phases complete">
-        {% for phase in phases %}
-        {% set step = done_map.get(phase) %}
-        {% set state = step.state if step else ('running' if run.phase == phase
-                        and run.state == 'running' else 'pending') %}
-        {% set stroke = {'done':'#0ca30c', 'failed':'#d03b3b',
+           aria-label="{{ gdone }} of {{ groups|length }} steps complete">
+        {% for g in groups %}
+        {% set state = g.state %}
+        {# A finished step is drawn in the VERDICT's colour, not in green.
+           The ring measures how much of the pipeline ran, which is a true
+           thing to measure, but a large emerald ring beside a red verdict is
+           the loudest element on the page telling the wrong story. Green here
+           now means the run both finished and passed. #}
+        {% set finished = {'pass':'#0ca30c', 'partial':'#fab219',
+                           'fail':'#d03b3b'}.get(run.verdict,
+                           '#0ca30c' if run.state != 'done' else '#94a3b8') %}
+        {% set stroke = {'done':finished, 'failed':'#d03b3b',
                          'running':'#8b5cf6', 'pending':'#e2e8f0'} %}
         <circle cx="70" cy="70" r="{{ r }}" fill="none" stroke-linecap="round"
                 stroke="{{ stroke.get(state, '#e2e8f0') }}" stroke-width="12"
                 stroke-dasharray="{{ '%.2f'|format(seg - gap) }} {{ '%.2f'|format(circ - seg + gap) }}"
                 stroke-dashoffset="{{ '%.2f'|format(-1 * loop.index0 * seg) }}"
                 class="{{ 'animate-pulse' if state == 'running' }}">
-          <title>{{ phase_titles.get(phase, phase) }} — {{ state }}</title>
+          <title>{{ g.label }}, {{ state }}</title>
         </circle>
         {% endfor %}
       </svg>
       <div class="pointer-events-none absolute inset-0 grid place-items-center">
         <div class="text-center">
-          <p class="text-[26px] font-semibold leading-none tracking-tight text-slate-900">
-            {{ run.progress[0] }}<span class="text-slate-300">/</span>{{ run.progress[1] }}
+          <p class="text-[26px] font-semibold leading-none tracking-tight
+                    {{ 'text-rose-700' if run.verdict == 'fail'
+                       else 'text-amber-700' if run.verdict == 'partial'
+                       else 'text-slate-900' }}">
+            {{ gdone }}<span class="text-slate-300">/</span>{{ groups|length }}
           </p>
           <p class="mt-1 text-[10.5px] font-medium uppercase tracking-[.09em] text-slate-400">
-            {{ 'phases' if run.progress[0] != 1 else 'phase' }}
+            {{ 'steps' if gdone != 1 else 'step' }}
           </p>
         </div>
       </div>
     </div>
 
     <ol class="min-w-0 flex-1 space-y-1">
-      {% for phase in phases %}
-      {% set step = done_map.get(phase) %}
-      {% set state = step.state if step else ('running' if run.phase == phase
-                      and run.state == 'running' else 'pending') %}
+      {% for g in groups %}
+      {% set state = g.state %}
       <li class="flex items-center gap-2.5 text-[13px]">
         {# Icon as well as colour, so the state survives being printed in grey. #}
         {% if state == 'done' %}
@@ -224,22 +272,23 @@
         <span class="min-w-0 flex-1 truncate
                      {{ 'text-slate-900 font-medium' if state in ('running', 'failed')
                         else 'text-slate-700' if state == 'done' else 'text-slate-400' }}">
-          {{ phase_titles.get(phase, phase) }}
+          {{ g.label }}
         </span>
         {# The time a step took stays on the page. "Which step is slow" is the
            first question anyone asks about a long run, and a timer that vanishes
            on completion only answers it for whoever was watching live. #}
         {% if state == 'running' %}
         <span class="shrink-0 tabular-nums text-[11px] font-medium text-brand-600">
-          {%- if elapsed %}{{ secs(elapsed) }}{% else %}running…{% endif %}
+          {%- set sofar = g.seconds + (elapsed or 0) -%}
+          {%- if sofar %}{{ secs(sofar) }}{% else %}running…{% endif %}
         </span>
         {% elif state == 'failed' %}
         <span class="shrink-0 text-[11px] font-medium text-status-critical">
-          failed{% if durations.get(phase) %} · {{ secs(durations[phase]) }}{% endif %}
+          failed{% if g.seconds %} · {{ secs(g.seconds) }}{% endif %}
         </span>
-        {% elif durations.get(phase) %}
+        {% elif g.seconds %}
         <span class="shrink-0 tabular-nums text-[11px] text-slate-400">
-          {{ secs(durations[phase]) }}
+          {{ secs(g.seconds) }}
         </span>
         {% endif %}
       </li>
@@ -247,18 +296,39 @@
     </ol>
   </div>
 
+  {# Straight to the task in Odoo. Under the ring rather than in the header:
+     somebody who has just read the progress is the one who wants to go and look
+     at the task, and a link in the header competes with Pause and Cancel. Opens
+     in a new tab so leaving does not lose a run being watched. #}
+  {% if task_url %}
+  <a href="{{ task_url }}" target="_blank" rel="noopener"
+     class="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200
+            bg-white px-3 py-1.5 text-[12.5px] font-medium text-brand-700
+            hover:border-brand-200 hover:bg-brand-50">
+    <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor"
+         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M11 3h6v6M17 3l-8 8M15 12v4a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1h4"/>
+    </svg>
+    Open task <span class="font-mono font-semibold">#{{ run.task_id }}</span> in Odoo
+  </a>
+  {% endif %}
+
   {# The detail below. The ring says where the run is; this says what it found. #}
   <div class="mt-4 space-y-2">
 
-    {% for phase in phases %}
+    {# `result_order`, not `phases`. The ring above is the running order; this
+       is the reading order, and they are not the same list. Somebody opening a
+       finished run wants the task and the summary first. How the plan was
+       arrived at is reference material they scroll to, so it sits below. #}
+    {% for phase in result_order %}
     {% set step = done_map.get(phase) %}
     {# A card only when there is something to say. An empty card per pending
        phase was seven boxes of nothing under a ring that already said so. #}
     {% if step and (step.note or (step.state == 'done' and step.detail)) %}
     <div class="card p-4">
       <div class="flex items-center gap-3">
-        <span class="flex-1 text-[13.5px] font-medium">{{ phase_titles.get(phase, phase) }}</span>
-        <span class="font-mono text-[11px] text-slate-400">{{ phase }}</span>
+        <span class="flex-1 text-[13.5px] font-bold text-slate-900">{{ phase_titles.get(phase, phase) }}</span>
+        <span class="font-mono text-[11px] font-bold text-slate-500">{{ phase }}</span>
       </div>
 
       {% if step and step.note %}
@@ -270,28 +340,33 @@
         {% if phase == 'interpret' %}
         <p class="text-[13px] leading-relaxed text-slate-700">{{ step.detail.get('goal') }}</p>
         {% if step.detail.get('requirements') %}
-        <p class="mt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-          {{ step.detail['requirements']|length }} requirements</p>
-        <ul class="mt-1 space-y-1">
+        <p class="mt-3 text-[12.5px] font-bold text-slate-800">
+          {{ step.detail['requirements']|length }} requirements
+        </p>
+        <ul class="mt-1.5 space-y-1.5">
           {% for r in step.detail['requirements'] %}
-          <li class="text-[12.5px] text-slate-700">
-            <span class="font-mono text-[11px] text-slate-400">{{ r.get('id') }}</span>
-            {{ r.get('text') }}
+          {# Shown as a plain number. The model is asked for `R1`-style ids and
+             the plan still references them, but that prefix exists to keep a
+             requirement id apart from a scenario id inside a prompt, which is
+             not something a reader should have to carry. #}
+          <li class="flex gap-2 text-[12.5px] leading-relaxed text-slate-700">
+            <span class="w-4 shrink-0 text-right font-mono text-[11.5px] font-bold
+                         text-brand-700">{{ r.get('id')|plain_number }}.</span>
+            <span>{{ r.get('text') }}</span>
           </li>
           {% endfor %}
         </ul>
         {% endif %}
         {% if step.detail.get('ambiguities') %}
-        <p class="mt-3 text-[11px] font-semibold uppercase tracking-wide text-amber-600">
-          Needs a human answer</p>
+        <p class="mt-4 text-[12.5px] font-bold text-amber-700">Needs a human answer</p>
         <p class="mt-0.5 text-[11.5px] leading-relaxed text-slate-500">
           {% if blocked_on %}The run stopped here rather than planning against a guess.
-          Answer or skip each one and it carries on from this point — nothing already
+          Answer or skip each one and it carries on from this point, nothing already
           done is repeated.
           {% else %}All answered or skipped.{% endif %}
         </p>
         {# Only when a plan already exists is an answer too late to just be
-           picked up — and even then it is offered, never done automatically.
+           picked up, and even then it is offered, never done automatically.
            Silently discarding five finished phases to absorb one answer was the
            old behaviour and it was wrong. #}
         {% if has_plan and not blocked_on %}
@@ -316,7 +391,7 @@
             <div class="mt-2 rounded-md border border-emerald-200 bg-white px-2.5 py-2">
               {% if given.skipped %}
               <p class="text-[12.5px] italic text-slate-500">
-                Skipped — the run used its own reading.
+                Skipped, the run used its own reading.
               </p>
               {% else %}
               <p class="text-[12.5px] text-slate-800">{{ given.answer }}</p>
@@ -340,7 +415,7 @@
                   {{ 'Update answer' if given else 'Answer' }}
                 </button>
                 {% if not given %}
-                {# Skipping is a decision, not silence — it says "proceed on your
+                {# Skipping is a decision, not silence, it says "proceed on your
                    own reading", which is why it unblocks the run. #}
                 <button formaction="/runs/{{ run.id }}/skip" class="btn-ghost text-[12px]"
                         title="Let the run continue using its own interpretation">
@@ -359,7 +434,7 @@
         {% set syms = step.detail.get('symbols') or [] %}
         {% if syms %}
         <p class="text-[12.5px] text-slate-600">
-          Searched {{ step.detail.get('files_searched') }} source files at
+          Searched <b>{{ step.detail.get('files_searched') }} source files</b> at
           <span class="font-mono">{{ (step.detail.get('commit') or '')[:8] }}</span>.
         </p>
         <ul class="mt-2 space-y-1">
@@ -387,10 +462,10 @@
               </div>
               {% elif not sym.found %}
               {# What was actually looked for, so "missing" can be judged rather
-                 than taken on trust — a field really named something else is a
+                 than taken on trust, a field really named something else is a
                  different problem from one that was never written. #}
               <div class="text-[11px] text-slate-500">
-                not found — searched for
+                not found, searched for
                 <span class="font-mono">{{ sym.searched|join(', ') }}</span>
               </div>
               {% endif %}
@@ -406,7 +481,10 @@
         {% endif %}
 
         {% elif phase == 'blast_radius' %}
-        <p class="text-[12.5px] text-slate-600">{{ step.detail.get('shared_table_note') }}</p>
+        <p class="text-[12.5px] leading-relaxed text-slate-700">
+          {{ step.detail.get('shared_table_note') }}</p>
+        <p class="mt-2 text-[12.5px] font-bold text-slate-800">
+          {{ (step.detail.get('impacted') or [])|length }} affected flows</p>
         <div class="mt-2 flex flex-wrap gap-1.5">
           {% for i in step.detail.get('impacted') or [] %}
           <span class="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11.5px]">
@@ -418,17 +496,17 @@
 
         {% elif phase == 'plan' %}
         {% set scenarios = step.detail.get('scenarios') or [] %}
-        <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-          {{ scenarios|length }} scenarios</p>
-        <ul class="mt-1 space-y-1">
+        <p class="text-[12.5px] font-bold text-slate-800">{{ scenarios|length }} scenarios</p>
+        <ul class="mt-1.5 space-y-1.5">
           {% for sc in scenarios %}
-          <li class="text-[12.5px] text-slate-700">
-            <span class="font-mono text-[11px] text-slate-400">{{ sc.get('id') }}</span>
+          <li class="flex gap-2 text-[12.5px] leading-relaxed text-slate-700">
+            <span class="shrink-0 font-mono text-[11.5px] font-bold text-brand-700">
+              {{ sc.get('id') }}</span>
             {% if sc.get('kind') == 'regression' %}
             <span class="rounded bg-amber-50 px-1 text-[10px] font-semibold uppercase
                          tracking-wide text-amber-700">regression</span>
             {% endif %}
-            {{ sc.get('title') }}
+            <span>{{ sc.get('title') }}</span>
           </li>
           {% endfor %}
         </ul>
@@ -443,8 +521,8 @@
              "this is broken". #}
           <div class="rounded-lg border border-slate-200 bg-white p-3">
             <div class="flex items-start gap-2">
-              <span class="font-mono text-[11px] text-slate-400">{{ sc.get('id') }}</span>
-              <span class="min-w-0 flex-1 text-[12.5px] text-slate-800">{{ sc.get('title') }}</span>
+              <span class="font-mono text-[11.5px] font-bold text-brand-700">{{ sc.get('id') }}</span>
+              <span class="min-w-0 flex-1 text-[12.5px] font-medium text-slate-800">{{ sc.get('title') }}</span>
               {% if sc.get('fixtures_made') %}
               <span class="shrink-0 rounded bg-brand-50 px-1.5 py-0.5 text-[10px]
                            font-semibold uppercase tracking-wide text-brand-700"
@@ -461,6 +539,42 @@
                   font-semibold text-slate-500">{{ sc.blocked }} not checked</span>{% endif %}
               </span>
             </div>
+            {# How to do this by hand. The point of writing the steps down is
+               that somebody can repeat the test without the gate, so they
+               belong on the page and not only in the prompt. #}
+            {% if sc.get('steps') %}
+            <details class="mt-2 border-t border-slate-100 pt-2">
+              <summary class="cursor-pointer text-[11.5px] font-bold text-slate-600
+                              hover:text-brand-700">
+                How to do this yourself
+                <span class="font-normal text-slate-400">{{ sc.steps|length }} steps</span>
+              </summary>
+              <ol class="mt-1.5 space-y-1">
+                {% for st in sc.steps %}
+                <li class="flex gap-2 text-[12px] leading-relaxed text-slate-600">
+                  <span class="shrink-0 font-mono text-[11px] font-bold text-slate-400">
+                    {{ loop.index }}.</span>
+                  <span>{{ st }}</span>
+                </li>
+                {% endfor %}
+              </ol>
+              {% if sc.get('screen', {}).get('highlight') %}
+              <p class="mt-1.5 text-[11.5px] text-slate-500">
+                Ringed in the screenshot:
+                <span class="font-mono text-[11px] font-bold text-slate-700">{{
+                  sc.screen.highlight|join(', ') }}</span>
+              </p>
+              {% endif %}
+            </details>
+            {% endif %}
+            {% if sc.get('shares_screen_with') %}
+            <p class="mt-1.5 text-[11.5px] text-slate-500">
+              Same screen as
+              <span class="font-mono text-[11px] font-bold text-brand-700">{{
+                sc.shares_screen_with }}</span>, so it is shown there once rather
+              than photographed again.
+            </p>
+            {% endif %}
             {% for c in sc.get('checks') or [] %}
             <div class="mt-1.5 flex items-start gap-2 border-t border-slate-100 pt-1.5">
               <span class="mt-0.5 h-2 w-2 shrink-0 rounded-full
@@ -470,8 +584,8 @@
                 <p class="text-[12px] text-slate-700">{{ c.get('text') }}</p>
                 {% if c.get('model') and c.get('field') %}
                 <p class="font-mono text-[11px] text-slate-400">
-                  {{ c.model }}.{{ c.field }} — expected {{ c.expect }},
-                  got {{ c.actual if c.actual is not none else '—' }}
+                  {{ c.model }}.{{ c.field }}, expected {{ c.expect }},
+                  got {{ c.actual if c.actual is not none else '-' }}
                 </p>
                 {% endif %}
                 {% if c.get('note') %}
@@ -492,31 +606,6 @@
           {% endfor %}
         </div>
 
-        {% elif phase == 'cleanup' %}
-        <p class="text-[13px] text-slate-700">
-          {{ step.detail.get('removed', 0) }} record{{ '' if step.detail.get('removed') == 1 else 's' }}
-          created by this review {{ 'was' if step.detail.get('removed') == 1 else 'were' }} removed.
-        </p>
-        {# A record we could not take back is the one thing here somebody has to
-           act on, so it is listed rather than counted. #}
-        {% if step.detail.get('refused') %}
-        <div class="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <p class="text-[12px] font-semibold text-amber-900">
-            Still on the instance — remove by hand:
-          </p>
-          <ul class="mt-1 space-y-1">
-            {% for r in step.detail['refused'] %}
-            <li class="text-[12px] text-amber-900">
-              <span class="font-mono">{{ r.model }}#{{ r.id }}</span> — {{ r.why }}
-            </li>
-            {% endfor %}
-          </ul>
-        </div>
-        {% endif %}
-
-        {% elif phase == 'verdict' %}
-        <p class="text-[13px] text-slate-700">{{ step.detail.get('note') }}</p>
-
         {% elif phase == 'summarise' %}
         <p class="text-[13px] leading-relaxed text-slate-700">{{ step.detail.get('summary') }}</p>
 
@@ -528,7 +617,7 @@
           A log note, so no follower was notified and nothing was emailed. No attachments.
         </p>
         {% elif step.detail.get('skipped') %}
-        <p class="text-[13px] text-slate-600">Not posted — {{ step.detail.get('skipped') }}.</p>
+        <p class="text-[13px] text-slate-600">Not posted, {{ step.detail.get('skipped') }}.</p>
         {% else %}
         <p class="text-[13px] leading-relaxed text-amber-900">{{ step.detail.get('error') }}</p>
         {# The verdict is already the product; this only failed to announce it,
@@ -543,33 +632,13 @@
       {% endif %}
     </div>
     {% endif %}
-    {% endfor %}
-  </div>
 
-  {# Evidence. Separate from the phase list because a reviewer scrolls to the
-     pictures, and hunting them out of six collapsed phases is friction. #}
-  {% if shots %}
-  <h2 class="mt-9 text-sm font-semibold">
-    Evidence
-    <span class="ml-1 font-normal text-slate-500">{{ shots|length }} screenshots</span>
-  </h2>
-  <div class="mt-3 space-y-4">
-    {% for s in shots %}
-    <figure class="overflow-hidden rounded-xl border border-slate-200 bg-white">
-      <a href="/runs/{{ run.id }}/shot/{{ s.id }}" target="_blank" rel="noopener">
-        <img src="/runs/{{ run.id }}/shot/{{ s.id }}" alt="{{ s.caption }}"
-             loading="lazy" class="w-full border-b border-slate-100">
-      </a>
-      <figcaption class="px-4 py-2.5">
-        <p class="text-[12.5px] font-medium text-slate-800">{{ s.caption }}</p>
-        {% if s.described %}
-        <p class="mt-1 text-[12px] leading-relaxed text-slate-600">{{ s.described }}</p>
-        {% endif %}
-      </figcaption>
-    </figure>
+    {# The findings ride here, right after the summary, not at the bottom of the
+       page. Inside the loop but outside the card's `if`, so they still show on a
+       run whose summary card has nothing to say. #}
+    {% if phase == 'summarise' %}{% include "_run_findings.html" %}{% endif %}
     {% endfor %}
   </div>
-  {% endif %}
 
   <p class="mt-6 text-[11.5px] text-slate-400">
     Started {{ run.started_at.strftime('%d %b %H:%M') if run.started_at }}.

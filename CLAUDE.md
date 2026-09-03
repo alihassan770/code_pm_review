@@ -111,7 +111,11 @@ throughout this file (§3, §7, §9…) point at it.
 Six phases, one `review_steps` row each, resumed by walking to the first that is
 not `done`:
 
-    interpret → blast_radius → plan → execute → verdict → summarise → report
+    interpret → code_check → blast_radius → plan → execute → summarise → report
+
+There is no `cleanup` phase and no `verdict` phase. Nothing created on a staging
+instance is deleted, so the user can tell gate-created records from their own,
+and the verdict is arithmetic computed inside `summarise` rather than a step.
 
 * **The summary is written back to the Odoo task** as an internal **log note**
   headed `PM REVIEW SUMMARY`, followed by the summary text and nothing else.
@@ -160,16 +164,167 @@ not `done`:
   zero forbidden models. Everything else stays on pro. **Do not "optimise" by
   lowering `reasoning_effort`:** measured, `medium` was *slower* than `high` on
   pro (301s vs 265s). Time tracks output volume, not reasoning depth.
+* **The run page badge shows the verdict, not the run state.** `done` means the
+  pipeline finished, which on a run where every check failed produced a green
+  DONE badge beside a red `fail` panel: two true statements reading as a
+  contradiction, and the green one is larger and higher up, so it won. A
+  finished run with no verdict reads "no verdict" in grey rather than an emerald
+  "done". The progress ring is drawn in the verdict's colour for the same
+  reason: it measures how much of the pipeline ran, which is worth measuring,
+  but a large emerald ring next to a red verdict is the loudest thing on the
+  page telling the wrong story.
+* **`partial` has to mean mostly working.** It was returned for any mix of
+  passes and failures, so 1 check holding out of 11 was reported as "partial",
+  which reads as a near miss when it is the opposite. A mixed result is partial
+  only when the passes OUTNUMBER the failures; ties fail, because half the
+  checks failing is not a qualified success and a gate in doubt should say the
+  more cautious thing.
+* **Anything a fixture creates is a DRAFT, and that caused a false failure.**
+  The plan built an `account.payment` and asserted it was live. `create` leaves
+  it in draft with `move_id = False`, so it has no journal entry and can never
+  reconcile: ten checks failed on a customisation that worked. Fixtures now take
+  `"then": ["action_post"]`, run through `fixtures.run_action` against the
+  `ALLOWED_ACTIONS` allowlist (post/confirm/validate/done only, never unlink,
+  write or cancel) and under the same `assert_writable` and `FORBIDDEN_MODELS`
+  rules as `create`.
+* **An impossible expectation is `blocked`, not `failed`.** On Odoo 18
+  `account.payment.state` has no `posted` value at all, it is draft, in_process,
+  paid, canceled, rejected. A plan written against 17 asserted `posted`, which
+  could never hold, and the gate reported it as the developer's bug.
+  `_selection_values` asks the instance what a selection field allows, and an
+  expectation outside that set is recorded as not-tested with the real values
+  named. Blocked already means "this was not actually checked", which is the
+  truth, and it keeps the plan's mistake out of the verdict.
+* **The plan prompt is given the client's Odoo version**, read from the client
+  row by `_client_version` and NOT from `conn`: the connection is not opened
+  until `execute`, several phases later, so reaching for it there raises
+  NameError. Version-shaped mistakes need the version in the prompt.
 * **The verdict is arithmetic.** `compute_verdict` counts assertion outcomes and
   contains no model call. `summarise` writes prose *about* it and is told not to
   contradict it.
 * **Screenshots** come from Playwright with the persona's `session_id` cookie
-  injected — never by driving the login form, whose markup differs across 17/18/19.
+  injected - never by driving the login form, whose markup differs across 17/18/19.
+* **The engine has seven phases; the run page shows five steps.**
+  `review.PHASE_GROUPS` folds `code_check` + `blast_radius` + `plan` into one
+  visible "Work out what to test". The split stays in the engine because each
+  phase is a checkpoint, so a pause between them replays nothing; collapsing
+  them into one function would trade that for a tidier list. Grouping is a
+  presentation decision and lives in the presentation layer.
+  A phase with no `review_steps` row reads as **skipped**, not pending, when the
+  run got past it or ended. Without that, runs predating a phase showed a step
+  spinning for ever above finished ones.
+* **Running order is the ring; reading order is `review.RESULT_ORDER`.** They
+  are different lists on purpose: somebody opening a finished run wants the
+  task, the summary, the records and the evidence first, and how the plan was
+  arrived at below. `_run_findings.html` is included from inside the phase loop
+  so it can sit between two cards rather than after all of them.
+* **Em dashes are stripped at render, not only banned in prompts.**
+  `templates.env.finalize` in `web/app.py` maps them to hyphens across every
+  template. The prompts still forbid them, but rows written before the ban hold
+  them and a model told not to emit a character sometimes does. The only place
+  that sees all the text is the render boundary.
+* **The task link is `/mail/view`, never `/web#id=...`.** Half our staff are
+  portal users, and `web_client` (`web/controllers/home.py`) ends with
+  `if not is_user_internal(...): return request.redirect('/web/login_successful')`
+  - a backend link strands them on a page with no way to the task. `/mail/view`
+  branches through `_get_access_action` on `user.share`: internal users get the
+  backend form, portal users get `/my/tasks/<id>`. It also survives the login
+  round-trip, verified live: `/web#...` redirects to
+  `login?redirect=%2Fweb%3F` with the task id gone (a browser never sends the
+  fragment), while `/mail/view` keeps `res_id` intact. No `access_token` is
+  attached, so access stays whatever Odoo already grants the person signed in.
+* **One screen, one screenshot.** A plan once wrote seven scenarios about one
+  wizard, one per field, and the run produced seven identical pictures of it.
+  Three things now prevent that, and the order matters:
+  1. `PLAN_SYSTEM` says a scenario is one screen and one behaviour, NEVER one
+     per field. Seven new fields are one scenario with seven assertions.
+  2. Each scenario carries a `screen` block: `kind` (form/list/wizard/settings/
+     groups/access), `model`, `record` (a fixture ref), and `highlight` (Odoo
+     field names, which get a red ring drawn round them by
+     `browser.Session.highlight`). Verified live against Odoo 19: the ring lands
+     on the right widgets and an unknown name is ignored rather than raising.
+  3. `merge_screens()` is the backstop, and it is the part that actually holds.
+     **Dedupe on the screen alone, `(model, record)`, never on the screen plus
+     its highlights** - seven one-field scenarios have seven different rings and
+     so seven different keys, which is exactly the case that has to collapse.
+     Rings from every scenario sharing a screen are unioned into the one shot.
+  A `screen.record` naming a fixture makes the capture open **that record's
+  form** rather than a list view, which is what shows the fields filled in.
+  Configuration is photographed as itself: `groups` shoots `res.groups`,
+  `access` shoots `ir.model.access`, and the governed record is dropped.
+  `tests/test_screens.py` (24 assertions) locks all of this down.
+* **`_read` turns `active_test` off, and this is a correctness fix, not a
+  convenience.** Odoo defaults it to True, so `search` silently drops archived
+  rows. Measured live on Custom Tours: `ir.cron.search([])` returned **1**
+  record; with `active_test: False` it returned **41**. Every check about an
+  inactive scheduled action was therefore recorded as "no record matches, this
+  needs a fixture", which reads like a badly written plan rather than a record
+  sitting right there archived. Worse, "the cron is disabled" is exactly the
+  kind of thing a review should catch and the gate could not see it. Archived
+  state is now a fact to assert on, not a filter. A caller passing its own
+  `active_test` is not overridden.
+* **A screenshot is of a record, not of a list.** `screen.domain` names one
+  existing record when the scenario did not create it, and
+  `_resolve_screen_record` opens its form. A domain matching several resolves
+  to **none**: a picture of the wrong one of six is worse than a picture of the
+  list, because it looks precise. Resolution order is fixture ref, then an
+  assertion's `res_id`, then `screen.domain`, then an assertion's `domain`.
+* **`highlight()` is scoped by view kind.** The first version ran
+  `querySelectorAll` on the document and ringed every match, so on a list view
+  `[name="active"]` ringed the cell in all forty rows and the picture pointed at
+  nothing. Now: on a form, every matching widget inside `.o_form_view`; on a
+  list, the **column header only** (`th[data-name]`), one element; anywhere
+  else, the first match. Verified against a live Odoo 19 list and form.
+* **Scenario `steps` are rendered on the run page** under "How to do this
+  yourself". The gate exists so somebody can repeat the check without it; steps
+  that live only in the prompt teach nobody the flow.
+* **`summarise` writes the verdict to `review_runs`, and that line is the
+  point.** When `verdict` was its own phase, that phase persisted it. Folding
+  the arithmetic into `summarise` moved the computation and left the write
+  behind, so runs completed all seven phases with an empty verdict. The symptom
+  was the two pages disagreeing: the run page showed the state ("Done") and the
+  task list showed an older run's verdict, because a sticky verdict is the last
+  run that produced one.
+* **A finished run with no verdict is not a pass.** It happens when every check
+  was blocked, so nothing was verified. The run page says "Nothing could be
+  checked" with the reason rather than showing a bare "Done", which reads as
+  success.
+* **The chatter note is plain text unless the account is internal.**
+  `message_post` escapes a plain string (`'body': escape(body)`), and the only
+  RPC-reachable way round it, `body_is_html=True`, is gated on
+  `self.env.user._is_internal()`. Our service account is a **portal** user, so
+  the HTML version posted markup that Odoo escaped and the note read as literal
+  `<p><b>PM REVIEW SUMMARY</b>` on the task. `Identity.can_post_html()` asks,
+  and `note_body(summary, html=...)` supplies the form the credential can
+  actually use. Verified live: the note now renders as
+  `<p>PM REVIEW SUMMARY: ...</p>`.
+* **A verdict is sticky, and that is why there are two lookups.**
+  `latest_by_task` is the last run of any kind; `verdicts_by_task` is the last
+  run that reached a verdict. They differ when a retry dies, and conflating them
+  lost real results: a task reviewed to `partial` and retried unsuccessfully
+  dropped back to "Start Review" as though it had never been looked at. A
+  verdict stops being the answer when a newer run produces a different one, not
+  when a newer run fails to produce any. The row shows both, verdict plus a
+  "last retry failed" badge.
+* **The task list is split into Not reviewed / Reviewed / All**, with the
+  verdict tally on the reviewed tab. The stage filter still scopes which tasks
+  are in view; the tabs say what has happened to them. An empty "not reviewed"
+  tab falls through to "reviewed" rather than being a dead end.
+* **`message_post` returns a list, not an id.** `odoo/service/model.py:99`
+  serialises any returned recordset to `.ids`, so `int()` on it raised
+  "int() argument must be ... not 'list'" *after* the note had already posted:
+  the run reported a failure that had not happened, and pressing "Post it again"
+  would have duplicated the note. `Identity._message_id` normalises it and never
+  raises, since the id is only used for logging.
+* **The portal service account cannot post with an explicit subtype.**
+  Confirmed live: `subtype_xmlid='mail.mt_note'` gives AccessError (create on
+  Message), and the `message_type='notification'` fallback succeeds. The
+  fallback is load-bearing, not belt-and-braces.
 * **Ambiguities are answerable.** The run page offers a box per open question;
   answering stores it, marks it authoritative in the prompt, and `replan()`
   rebuilds from interpretation so the plan reflects the answer.
 
-**163 tests passing.** The user numbers phases from 1, so their "phase 1" is A, "phase 2"
+**302 tests passing** (42 + 52 + 69 + 30 + 58 + 51). The user numbers phases from 1, so their "phase 1" is A, "phase 2"
 is B, "phase 3" is C.
 
 **Phases A–D write nothing to any client database.** Deliberate: a working app and real
@@ -291,7 +446,52 @@ several projects per client, `db_name_pattern` default cleared).
 - Project 116 = `P116 - Custom Tours - Odoo Implementation`, with stages including
   **PM Review** (33) and **AI Code Review** (497).
 
-### Phase D — next
+### Roles and the AI provider (2026-09-03)
+
+**Two roles, `user` and `admin`, and that is the whole model.** An admin sets the
+Odoo connection, the service credential and the AI provider; those apply to every
+user. A user runs reviews against them and cannot change them. Managed from
+Settings, next to the things they govern, rather than on a page of its own.
+
+* **Nobody is ever asked for a server or a database.** The sign in page takes a
+  login and a password only, and shows which Odoo it authenticates against. The
+  "change it" link is admin-gated by `setup.may_configure`, which is open only
+  while no user account exists.
+* **Two guards, both about lockout, not about tidiness.** You cannot demote
+  yourself, and the last administrator cannot be demoted at all. A system with no
+  administrator has nobody who can appoint one and the only way back is
+  `qa-gate grant-admin` on the server. `users.admin_count()` ignores inactive
+  rows, so a deactivated admin does not hold the door open. Verified over real
+  HTTP: the self-demote is refused and a non-admin gets 403 on both the page and
+  the POST.
+* Odoo's `base.group_system` still re-grants admin on next sign in
+  (`is_admin = is_admin OR EXCLUDED.is_admin`), so a demotion here is not
+  permanent for a real Odoo sysadmin. The page says so.
+
+**Three AI providers, two wire formats.** `ai.PROVIDERS` is a registry of
+`Provider` dataclasses. DeepSeek and OpenAI both speak `/chat/completions` and
+share `OpenAICompatible`; Anthropic gets its own class, because four things
+differ at once: system prompt is top-level, the reply is typed content blocks,
+thinking is a request field, and auth is `x-api-key`. That is a class, not four
+branches. `DeepSeek` survives as an alias.
+
+* **Model ids come from the provider, not from module constants.** `review` and
+  `addon_digest` call `client.provider.reasoning` / `.fast`, so the measured
+  choice of a fast model for `plan` survives switching provider.
+* **One stored key per provider** (`ai_key_<name>`), not one shared row, so
+  trying another provider and switching back needs no retyping. The selection
+  itself lives in the new `app_settings` key/value table, migration 012: it is a
+  choice, not a secret, and encrypting it would obscure a value whose job is to
+  be read.
+* Migration 012 copies an existing `deepseek_key` row to `ai_key_deepseek`, and
+  `client()` reads the old row as a fallback, so an upgrade cannot turn a working
+  key into "no AI provider configured".
+* **Only DeepSeek is verified end to end.** The Anthropic and OpenAI paths are
+  written from their documented request shapes and unit-tested against recorded
+  payloads; without a key for either, nothing has been proved live. Say so rather
+  than implying all three are equal.
+
+### Phase D - next
 
 Python `ast` + `lxml` parsers, the §10 signal table, blast-radius selection, and the three
 cheap static checks the plan says to ship in week one: missing `super()`, edited
@@ -366,7 +566,42 @@ without removing a second service. This is the known divergence between doc and 
 - **Status is icon + label + colour, never colour alone.** Status hues are reserved
   (good `#0ca30c`, warning `#fab219`, serious `#ec835a`, critical `#d03b3b`) and never
   reused for decoration.
-- One call to action per screen — the dashboard's "Add client" is hidden when the empty
+- **Motion primitives live in `base.html`**: `.rise` (staggered entrance, index
+  passed as `--i`), `.card-lift` (hover), `.grow-x` (proportion bars), `.breathe`
+  (a slow pulse for live runs, gentler than Tailwind's `animate-pulse`, which is
+  tuned for skeletons and too insistent for a dot that sits there for twenty
+  minutes). All of it is off under `prefers-reduced-motion`.
+- **Entrance animations use `animation-fill-mode: backwards`, never `both`.**
+  With `both` the final keyframe keeps applying for ever, and an
+  animation-applied value beats an ordinary rule: `to { transform:none }` won
+  against `.card-lift:hover`, so the hover lift silently did nothing while the
+  box-shadow half of the same rule worked. Caught by measuring the element's
+  box before and after hover, not by looking at it.
+- **The dashboard leads with what is waiting, not with what already happened.**
+  The recent-runs feed was a log: it told you what had been dealt with. The
+  panel is now "Waiting for review", tasks sitting in a client's review stage
+  with no verdict on record, with the count repeated as a sentence under the
+  page title.
+- **That panel is fetched after the page, never with it** (`/dashboard/pending`,
+  HTMX `hx-trigger="load"`). Working it out means asking Odoo for the tasks of
+  every project of every client; measured, the page is interactive in 0.9s and
+  the panel lands at 2.7s. Blocking the dashboard on it would make the whole app
+  feel slow to open when only one panel is. A skeleton holds the height so
+  nothing jumps.
+- **The sentence and the list come from one request.** The panel response also
+  carries an `hx-swap-oob` update for the hero line, so the headline count can
+  never disagree with the list under it.
+- A client whose Odoo read fails is counted into a "could not be read" note
+  rather than skipped silently: a short list that claims to be complete is worse
+  than one that admits it is not.
+- **The dashboard reports work, not setup.** It carries the verdict split, a
+  live-run indicator and a recent-reviews feed. A landing page for a review tool
+  that only counts how many clients are configured is a page about installation.
+  `review.verdict_tally` counts the latest verdict **per task**, not per run, so
+  one task retried six times cannot outvote five reviewed once.
+- Client avatars take a hue from `id * 137`, the golden angle, so consecutive
+  ids come out as different colours rather than neighbouring shades.
+- One call to action per screen - the dashboard's "Add client" is hidden when the empty
   state already offers one.
 
 ---
@@ -379,7 +614,7 @@ Checked against the local Odoo source trees, not recalled. Trust these.
 
 - **Hoot does not exist in Odoo 17** (`web/static/lib/hoot` is 18/19 only; 17 is QUnit).
   We target 17, 18 and 19.
-- **Hoot mocks the world** — `lib/hoot/mock/` ships `network.js`, `date.js`, `window.js`,
+- **Hoot mocks the world** - `lib/hoot/mock/` ships `network.js`, `date.js`, `window.js`,
   `storage.js`, plus a `mock_server`. Rev 3's premise is real data, real modules, real config.
 - It ships only in `web.assets_unit_tests_setup`, not `assets_backend`, and produces no
   screenshots. Odoo **tours** stay the documented fallback for widgets Playwright can't

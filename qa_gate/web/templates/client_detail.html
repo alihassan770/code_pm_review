@@ -28,8 +28,8 @@
     </div>
   </div>
 
-  {# Only the knowledge base. The other four — hygiene audit, instance census,
-     coverage map, team access — are diagnostics nothing in the review consumes,
+  {# Only the knowledge base. The other four, hygiene audit, instance census,
+     coverage map, team access, are diagnostics nothing in the review consumes,
      and five buttons where one is used makes the one harder to find. Their
      pages still exist at /clients/<id>/{audit,census,coverage,team} and are
      reachable by URL; only the links are gone. #}
@@ -48,11 +48,11 @@
 
     <dt class="text-slate-500">Staging URL</dt>
     <dd class="col-span-2 font-mono text-xs break-all">
-      {{ client.staging_url or '—' }}
+      {{ client.staging_url or '-' }}
     </dd>
 
     <dt class="text-slate-500">Staging database</dt>
-    <dd class="col-span-2 font-mono text-xs">{{ client.staging_db or '—' }}</dd>
+    <dd class="col-span-2 font-mono text-xs">{{ client.staging_db or '-' }}</dd>
 
     <dt class="text-slate-500">Name pattern</dt>
     <dd class="col-span-2 font-mono text-xs">{{ client.db_name_pattern }}</dd>
@@ -64,7 +64,7 @@
         {{ cp.odoo_project_name or 'Project' }}
         <span class="font-mono text-slate-400">#{{ cp.odoo_project_id }}</span></span>
       {% else %}
-      <span class="text-xs text-slate-400">none linked — no tasks can be listed</span>
+      <span class="text-xs text-slate-400">none linked, no tasks can be listed</span>
       {% endfor %}
     </dd>
 
@@ -88,7 +88,7 @@
         <span class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-500">{{ r.base_branch }}</span>
         <span class="text-slate-400">{{ 'shared branch' if r.is_shared else 'per task' }}</span>
         {% if r.is_shared %}
-        <span class="text-amber-700">— regressions cannot be attributed to a task</span>
+        <span class="text-amber-700">- regressions cannot be attributed to a task</span>
         {% endif %}
       </div>
       {% else %}
@@ -109,7 +109,7 @@
   <h2 class="mt-10 text-sm font-semibold">How the agent reaches this instance</h2>
   <p class="mt-1 text-sm text-slate-600">
     One credential, not two. A browser sign-in uses a real password and can do
-    <b>both</b> jobs — take screenshots and read data for assertions. An API key can only
+    <b>both</b> jobs, take screenshots and read data for assertions. An API key can only
     read data: Odoo will not let a key open a web session, so it cannot produce a
     screenshot.
   </p>
@@ -147,7 +147,7 @@
         <span>
           <span class="text-[13.5px] font-medium">API key (JSON-RPC)</span>
           <span class="block text-[12.5px] leading-relaxed text-slate-500">
-            Data only — no screenshots. Choose this when the account must keep
+            Data only, no screenshots. Choose this when the account must keep
             two-factor enabled, or when policy forbids storing a password.
           </span>
         </span>
@@ -258,12 +258,12 @@
     </div>
 
     {# The reason lives on the page, not in a tooltip. "Cannot sign in" without
-       it sends somebody to re-type a password that was never the problem —
+       it sends somebody to re-type a password that was never the problem -
        2FA and a portal-only account both fail here and neither is a typo. #}
     {% if pr.state == 'failed' and pr.verify_error %}
     <div class="border-t border-slate-100 bg-rose-50/40 px-4 py-2">
       <p class="text-[12px] leading-relaxed text-rose-900">
-        <span class="font-medium">{{ pr.login }}</span> — {{ pr.verify_error }}
+        <span class="font-medium">{{ pr.login }}</span>, {{ pr.verify_error }}
       </p>
     </div>
     {% endif %}

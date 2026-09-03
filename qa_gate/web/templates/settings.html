@@ -4,7 +4,10 @@
 {% block content %}
 <div class="max-w-2xl">
   <h1 class="text-[1.35rem] font-semibold tracking-tight">Settings</h1>
-  <p class="mt-1 text-sm text-slate-500">How this app reaches your own Odoo.</p>
+  <p class="mt-1 text-sm text-slate-500">
+    How this app reaches your own Odoo. Everything here is set once by an administrator
+    and applies to every user, nobody is asked for a server or a key when they sign in.
+  </p>
 
   {% if ok %}
   <div class="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] text-emerald-900">
@@ -21,10 +24,14 @@
     <h2 class="text-[15px] font-semibold">Odoo connection</h2>
     <dl class="mt-3 grid grid-cols-3 gap-x-6 gap-y-2 text-sm">
       <dt class="text-slate-500">URL</dt>
-      <dd class="col-span-2 font-mono text-[13px] break-all">{{ cfg.odoo.url or '—' }}</dd>
+      <dd class="col-span-2 font-mono text-[13px] break-all">{{ cfg.odoo.url or '-' }}</dd>
       <dt class="text-slate-500">Database</dt>
-      <dd class="col-span-2 font-mono text-[13px]">{{ cfg.odoo.db or '—' }}</dd>
+      <dd class="col-span-2 font-mono text-[13px]">{{ cfg.odoo.db or '-' }}</dd>
     </dl>
+    <p class="mt-2 text-xs leading-relaxed text-slate-500">
+      Whoever signs in authenticates against this server, so changing it changes who can
+      log in. Admin only, and the sign in page never asks a user for it.
+    </p>
     <a href="/setup" class="mt-3 inline-block text-[13px] font-medium text-brand-600
        underline underline-offset-2 hover:text-brand-700">Change the connection</a>
   </div>
@@ -34,7 +41,7 @@
     <p class="mt-1.5 text-[13px] leading-relaxed text-slate-500">
       Used to read <span class="font-mono">project.task</span> and, later, to write chatter
       back. It exists because a nightly run has no signed-in person to borrow credentials
-      from — and storing every staff member's password to avoid it would be a far worse trade.
+      from, and storing every staff member's password to avoid it would be a far worse trade.
     </p>
 
     {% if service_configured %}
@@ -60,7 +67,7 @@
         <input id="secret" name="secret" type="password" autocomplete="off"
                class="field font-mono text-[13px]">
         <p class="mt-1.5 text-xs leading-relaxed text-slate-500">
-          An API key, not a password — Odoo requires one for RPC when the account has
+          An API key, not a password, Odoo requires one for RPC when the account has
           two-factor enabled, and it can be revoked without disturbing a password a human
           also uses. Verified against Odoo before it is stored, and encrypted at rest.
         </p>
@@ -72,7 +79,7 @@
   <div class="card mt-5 p-5">
     <h2 class="text-[15px] font-semibold">GitHub access</h2>
     <p class="mt-1.5 text-[13px] leading-relaxed text-slate-500">
-      Reads each client's repositories to build the knowledge base — the module list,
+      Reads each client's repositories to build the knowledge base, the module list,
       <span class="font-mono text-[12px]">qa/knowledge.yml</span> and
       <span class="font-mono text-[12px]">qa/scenarios/</span>. Read-only; this app never
       pushes to a client repo.
@@ -117,40 +124,177 @@
   <div class="card p-6">
     <h2 class="text-[15px] font-semibold">AI provider</h2>
     <p class="mt-1.5 text-[13px] leading-relaxed text-slate-500">
-      Used to read addon source and propose what each module does, and later to turn a
+      Used to read addon source and propose what each module does, and to turn a
       task description into checkable assertions. It never decides whether a review
-      passes — that is computed from assertion results, and a model's opinion is not one.
+      passes, that is computed from assertion results, and a model's opinion is not one.
+      One provider is active for everybody.
     </p>
 
-    {% if deepseek_configured %}
-    <p class="mt-3 inline-flex items-center gap-1.5 rounded-md border border-emerald-200
-              bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800">
-      <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
-        d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z"
-        clip-rule="evenodd"/></svg>
-      Key stored, ending ••••{{ deepseek_hint }}
-    </p>
-    {% endif %}
-
-    <form method="post" action="/settings/deepseek-key" class="mt-4 space-y-4">
+    <form method="post" action="/settings/ai-provider" class="mt-4 space-y-4">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      {# Radios rather than a select. Three options, each of which needs a line
+         of its own to say whether a key is already held, and a select cannot
+         show that without opening it. #}
+      <fieldset>
+        <legend class="label">Provider</legend>
+        <div class="mt-1.5 space-y-2">
+          {% for p in providers %}
+          {% set held = provider_keys.get(p.key) or {} %}
+          <label class="flex cursor-pointer items-start gap-3 rounded-xl border p-3
+                        transition hover:bg-slate-50
+                        {{ 'border-brand-300 bg-brand-50/60' if p.key == provider.key
+                           else 'border-slate-200' }}">
+            <input type="radio" name="provider" value="{{ p.key }}"
+                   class="mt-0.5 h-4 w-4 accent-brand-600"
+                   {{ 'checked' if p.key == provider.key }}
+                   data-prefix="{{ p.key_prefix }}" data-console="{{ p.console }}"
+                   data-held="{{ '1' if held.get('configured') else '' }}">
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-center gap-2">
+                <span class="text-[13.5px] font-semibold text-slate-800">{{ p.label }}</span>
+                {% if p.key == provider.key %}
+                <span class="rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-bold
+                             uppercase tracking-wide text-brand-700">in use</span>
+                {% endif %}
+                {% if held.get('configured') %}
+                <span class="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold
+                             text-emerald-800">key stored ••••{{ held.get('hint') }}</span>
+                {% else %}
+                <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold
+                             text-slate-500">no key yet</span>
+                {% endif %}
+              </span>
+              <span class="mt-0.5 block font-mono text-[11.5px] text-slate-500">
+                {{ p.reasoning }}
+                <span class="text-slate-400">reasoning</span>
+                · {{ p.fast }} <span class="text-slate-400">fast</span>
+              </span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+
       <div>
-        <label for="api_key" class="label">DeepSeek API key</label>
+        <label for="api_key" class="label">API key</label>
         <input id="api_key" name="api_key" type="password" autocomplete="off"
-               placeholder="sk-…" class="field font-mono text-[13px]">
+               placeholder="{{ provider.key_prefix }}…" class="field font-mono text-[13px]">
         <p class="mt-1.5 text-xs leading-relaxed text-slate-500">
-          Create one at <span class="font-mono">platform.deepseek.com</span>. Verified
-          against the provider before it is stored, encrypted at rest with the same key as
-          every other credential here, and never rendered back into a page — only the last
-          four characters are kept in the clear, so you can tell two keys apart when
-          rotating one. Digests run on
-          <span class="font-mono">{{ deepseek_model }}</span> with reasoning enabled.
+          Get one from <a id="console-link" href="{{ provider.console }}" target="_blank"
+             rel="noopener" class="font-mono text-brand-600 underline underline-offset-2
+             hover:text-brand-700">{{ provider.console }}</a>.
+          Verified against the provider before it is stored, encrypted at rest with the
+          same key as every other credential here, and never rendered back into a page.
+          Only the last four characters are kept in the clear, so you can tell two keys
+          apart when rotating one.
+        </p>
+        <p id="key-optional" class="mt-1.5 hidden text-xs font-medium text-slate-600">
+          A key is already stored for this provider. Leave this blank to switch to it
+          without retyping.
         </p>
       </div>
-      <button type="submit" class="btn-primary">
-        {{ 'Replace key' if deepseek_configured else 'Verify and store' }}
-      </button>
+      <button type="submit" class="btn-primary">Save AI provider</button>
     </form>
   </div>
+
+  {# Roles. Next to the settings they govern, rather than on a page of their
+     own: "who may change this" is only meaningful beside the thing changed. #}
+  <div class="card p-6">
+    <h2 class="text-[15px] font-semibold">Who may change these settings</h2>
+    <p class="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+      Two roles. An <span class="font-semibold text-slate-700">admin</span> sets the Odoo
+      connection, the service credential and the AI provider, and those apply to everybody.
+      A <span class="font-semibold text-slate-700">user</span> runs reviews against them
+      and cannot change them. There is no signup, accounts appear here the first time
+      somebody signs in with their Odoo login.
+    </p>
+
+    <div class="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+      <table class="w-full text-sm">
+        <thead class="border-b border-slate-200 bg-slate-50/80 text-left text-[11px]
+                      uppercase tracking-wider text-slate-500">
+          <tr>
+            <th class="px-4 py-2 font-semibold">Person</th>
+            <th class="px-4 py-2 font-semibold">Role</th>
+            <th class="px-4 py-2 font-semibold text-right">Change</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for u in staff %}
+          <tr>
+            <td class="px-4 py-2">
+              <span class="font-medium text-slate-800">{{ u.name or u.login }}</span>
+              <span class="ml-1.5 font-mono text-[11.5px] text-slate-400">{{ u.login }}</span>
+            </td>
+            <td class="px-4 py-2">
+              {% if u.is_admin %}
+              <span class="rounded bg-brand-50 px-2 py-0.5 text-[11px] font-bold
+                           uppercase tracking-wide text-brand-700">admin</span>
+              {% else %}
+              <span class="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-semibold
+                           uppercase tracking-wide text-slate-500">user</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-2 text-right">
+              <form method="post" action="/settings/role" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="user_id" value="{{ u.id }}">
+                <input type="hidden" name="role" value="{{ 'user' if u.is_admin else 'admin' }}">
+                <button class="rounded-lg border border-slate-300 bg-white px-2.5 py-1
+                               text-[12px] font-semibold text-slate-700
+                               hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700
+                               disabled:cursor-not-allowed disabled:opacity-40"
+                        {{ 'disabled' if u.is_admin and u.id == session.user.id }}
+                        title="{{ 'You cannot remove your own admin rights'
+                                  if u.is_admin and u.id == session.user.id
+                                  else 'Change this role' }}">
+                  {{ 'Make user' if u.is_admin else 'Make admin' }}
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="mt-2 text-xs leading-relaxed text-slate-500">
+      The last administrator cannot be demoted, there would be nobody left who could
+      appoint one. Anybody holding <span class="font-mono">base.group_system</span> in
+      Odoo is made an admin again on their next sign in.
+    </p>
+  </div>
+
 </div>
+
+{# Reacts to the provider choice: the placeholder, the console link and whether
+   a key is needed at all all depend on it. In `DOMContentLoaded` because the
+   script block is emitted into <head>, and an earlier version of this pattern
+   silently did nothing for exactly that reason. #}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var radios = document.querySelectorAll('input[name="provider"]');
+    var key = document.getElementById('api_key');
+    var link = document.getElementById('console-link');
+    var optional = document.getElementById('key-optional');
+    if (!radios.length || !key) return;
+
+    function sync() {
+      var chosen = document.querySelector('input[name="provider"]:checked');
+      if (!chosen) return;
+      key.placeholder = (chosen.dataset.prefix || '') + '\u2026';
+      if (link) { link.href = chosen.dataset.console; link.textContent = chosen.dataset.console; }
+      if (optional) optional.classList.toggle('hidden', !chosen.dataset.held);
+      radios.forEach(function (r) {
+        var box = r.closest('label');
+        if (!box) return;
+        box.classList.toggle('border-brand-300', r.checked);
+        box.classList.toggle('bg-brand-50/60', r.checked);
+        box.classList.toggle('border-slate-200', !r.checked);
+      });
+    }
+    radios.forEach(function (r) { r.addEventListener('change', sync); });
+    sync();
+  });
+</script>
 {% endblock %}

@@ -22,7 +22,7 @@
   </a>
   <div class="flex items-baseline justify-between">
     <div>
-      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }} — instance census</h1>
+      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }}, instance census</h1>
       <p class="mt-1 text-xs text-slate-500">
         Read from the instance just now over RPC. Nothing on this page is stored.
       </p>
@@ -62,7 +62,7 @@
     {% for d in drift %}
     <li class="{{ 'text-emerald-700' if d.kind == 'module_added'
                   else 'text-red-700' if d.kind == 'module_removed' else 'text-amber-700' }}">
-      {{ d.marker }} {{ d.subject }} — {{ d.detail }}
+      {{ d.marker }} {{ d.subject }}, {{ d.detail }}
     </li>
     {% endfor %}
   </ul>
@@ -71,7 +71,7 @@
   {% if census.manual_fields %}
   <h2 class="mt-10 text-sm font-semibold">
     Manual and Studio fields
-    <span class="ml-1 font-normal text-slate-500">— exist in no repository</span>
+    <span class="ml-1 font-normal text-slate-500">- exist in no repository</span>
   </h2>
   <div class="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
     <table class="w-full text-sm">
@@ -106,7 +106,7 @@
   {% if conflicts %}
   <h2 class="mt-10 text-sm font-semibold">
     View conflicts
-    <span class="ml-1 font-normal text-slate-500">— more than one module patching the same view</span>
+    <span class="ml-1 font-normal text-slate-500">- more than one module patching the same view</span>
   </h2>
   <ul class="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white text-sm">
     {% for c in conflicts[:40] %}
@@ -135,7 +135,7 @@
         <tr>
           <td class="px-4 py-1.5 font-mono text-[12px]">{{ m.name }}</td>
           <td class="px-4 py-1.5 font-mono text-[11px] text-slate-500">{{ m.version }}</td>
-          <td class="px-4 py-1.5 text-[12px] text-slate-600">{{ m.author or '—' }}</td>
+          <td class="px-4 py-1.5 text-[12px] text-slate-600">{{ m.author or '-' }}</td>
           <td class="px-4 py-1.5 font-mono text-[11px] text-slate-500">{{ m.state }}</td>
         </tr>
         {% endfor %}
@@ -151,7 +151,7 @@
   <h2 class="mt-10 text-sm font-semibold">What this census could not read</h2>
   <ul class="mt-3 space-y-1 rounded-xl border border-amber-200 bg-amber-50 p-4 text-[13px] text-amber-900">
     {% for model, why in census.gaps.items() %}
-    <li><span class="font-mono text-[12px]">{{ model }}</span> — {{ why }}</li>
+    <li><span class="font-mono text-[12px]">{{ model }}</span>, {{ why }}</li>
     {% endfor %}
   </ul>
   {% endif %}

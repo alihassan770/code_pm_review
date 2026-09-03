@@ -48,6 +48,8 @@ def client_tasks(request: Request, client_id: int, stage: int | None = None):
     ctx = {
         "client": client, "tasks": [], "stage_names": [], "counts": {},
         "active_stage": wanted_stage, "error": None, "partial": [],
+        "view": "new", "fresh_count": 0, "reviewed_count": 0, "verdicts": {},
+        "tally": {"pass": 0, "partial": 0, "fail": 0},
         "service_configured": app_secrets.is_configured(app_secrets.IDENTITY_RPC),
         "runs": {},
     }
@@ -98,7 +100,47 @@ def client_tasks(request: Request, client_id: int, stage: int | None = None):
     ctx["stage_names"] = sorted(seen_stages, key=lambda n: (-seen_stages[n], n))
     # What each task's last review concluded, so the list can show a verdict
     # instead of offering to start a review that has already been run.
-    ctx["runs"] = review.latest_by_task(client.id, [t.id for _cp, t in rows])
+    task_ids = [t.id for _cp, t in rows]
+    runs = review.latest_by_task(client.id, task_ids)
+    # The last run and the last *conclusive* run are different things, and only
+    # the second decides whether a task counts as reviewed. See
+    # `review.verdicts_by_task` for why a failed retry must not erase a verdict.
+    verdicts = review.verdicts_by_task(client.id, task_ids)
+    ctx["runs"] = runs
+    ctx["verdicts"] = verdicts
+
+    # Split the list in two. A task that has been through the gate and one that
+    # has never been looked at are different work: the first needs reading, the
+    # second needs running. Mixing them meant the only way to find what still
+    # needed a review was to scan every row for the absence of a badge.
+    #
+    # "Reviewed" means a run reached a verdict. A run that is still going, or
+    # that was cancelled before it concluded, leaves the task in the queue where
+    # somebody will pick it up, which is where it belongs.
+    reviewed, fresh = [], []
+    for cp, t in rows:
+        (reviewed if verdicts.get(t.id) else fresh).append((cp, t))
+
+    view = (request.query_params.get("view") or "new").strip().lower()
+    if view not in ("new", "reviewed", "all"):
+        view = "new"
+    # Landing on an empty "not reviewed" tab when there is reviewed work to see
+    # is a dead end, so fall through to it rather than showing nothing.
+    if view == "new" and not fresh and reviewed:
+        view = "reviewed"
+
+    ctx["view"] = view
+    ctx["fresh_count"] = len(fresh)
+    ctx["reviewed_count"] = len(reviewed)
+    ctx["tasks"] = {"new": fresh, "reviewed": reviewed, "all": rows}[view]
+
+    # The verdict tally, so the reviewed tab can be read without counting rows.
+    tally = {"pass": 0, "partial": 0, "fail": 0}
+    for _cp, t in reviewed:
+        v = verdicts[t.id].verdict
+        if v in tally:
+            tally[v] += 1
+    ctx["tally"] = tally
     return deps.render(request, "client_tasks.html", ctx)
 
 

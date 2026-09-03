@@ -104,6 +104,96 @@ class Session:
         except Exception:  # noqa: BLE001
             return False
 
+    #: How a highlighted field is drawn. A ring plus an offset rather than a
+    #: filled box, so the value inside stays readable, and `status-critical` red
+    #: because it has to survive being pasted into a chat window at half size.
+    _HIGHLIGHT_CSS = ("outline:3px solid #d03b3b!important;"
+                      "outline-offset:3px;border-radius:5px;"
+                      "box-shadow:0 0 0 6px rgba(208,59,59,.16)!important;")
+
+    def view_kind(self) -> str:
+        """Which Odoo view is on screen: "form", "list", or "other".
+
+        Asked before highlighting, because what a field name means depends on
+        it. On a form `[name="active"]` is one widget; on a list it is one cell
+        per row, and forty rows means forty of them.
+        """
+        try:
+            if self._page.query_selector(".o_form_view"):
+                return "form"
+            if self._page.query_selector(".o_list_view"):
+                return "list"
+        except Exception:  # noqa: BLE001
+            pass
+        return "other"
+
+    def highlight(self, targets: list[str]) -> list[str]:
+        """Ring the fields or buttons a scenario is actually about.
+
+        On a sale order form with sixty widgets, "we changed one field" is
+        invisible in a screenshot. The picture is only evidence if it shows
+        *which* thing changed, so the scenario names its targets and they get
+        drawn before the capture.
+
+        Targets are Odoo field or button names, not CSS. `[name="x"]` is how
+        Odoo tags both in 17, 18 and 19, which makes one selector enough and
+        keeps the plan writing field names it already knows rather than
+        selectors it would have to guess.
+
+        **Scoped, and never a whole column.** The first version ran
+        `querySelectorAll` against the document and ringed every match. On a
+        form that is right, one widget per field. On a list it ringed the cell
+        in every visible row, so a picture meant to point at one thing pointed
+        at forty and communicated nothing. So:
+
+          * on a form, ring the matching widgets inside `.o_form_view`, which
+            also keeps the ring out of any list embedded in a tab;
+          * on a list, ring the column HEADER only, one element, which says
+            which column to look at without claiming a particular row;
+          * anywhere else, ring the first match and stop.
+
+        Returns the targets it actually found, so the caller can say what was
+        ringed rather than assert a ring that is not in the image. A miss is
+        never an error: a field hidden by the view is a fact about the view.
+        """
+        kind = self.view_kind()
+        found: list[str] = []
+        for name in targets or []:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            name = name.strip()
+            if kind == "form":
+                sel, limit = f'.o_form_view [name="{name}"]', 0      # 0 = all
+            elif kind == "list":
+                # The header, not the cells. `th[data-name]` is how the list
+                # view tags its columns in 17 through 19.
+                sel, limit = (f'.o_list_view th[data-name="{name}"], '
+                              f'.o_list_view th[data-name="{name}"] *'), 1
+            else:
+                sel, limit = f'[name="{name}"]', 1
+            try:
+                n = self._page.evaluate(
+                    """([sel, css, limit]) => {
+                        let els = Array.from(document.querySelectorAll(sel));
+                        if (!els.length) return 0;
+                        if (limit > 0) els = els.slice(0, limit);
+                        els.forEach(e => e.style.cssText += css);
+                        els[0].scrollIntoView({block: 'center', inline: 'center'});
+                        return els.length;
+                    }""",
+                    [sel, self._HIGHLIGHT_CSS, limit])
+            except Exception as exc:  # noqa: BLE001 - a selector that does not
+                # match is not a failure worth ending a review over.
+                log.info("could not highlight %s: %s", name, exc)
+                continue
+            if n:
+                found.append(name)
+        if found:
+            # Scrolling moved the viewport; let Odoo finish any lazy render it
+            # started before the shutter.
+            self._page.wait_for_timeout(400)
+        return found
+
     def shot(self, caption: str) -> Shot:
         return Shot(caption=caption, png=self._page.screenshot(), url=self._page.url)
 

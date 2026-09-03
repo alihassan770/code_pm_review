@@ -135,6 +135,50 @@ def create(conn, ledger: Ledger, *, ref: str, model: str, values: dict) -> int:
     return res_id
 
 
+#: State transitions a fixture may run after it is created.
+#:
+#: This list exists because of a real false failure. The plan created an
+#: `account.payment` and asserted it reached `posted`. `create` leaves a payment
+#: in **draft**, a draft payment has no journal entry, and a record with no
+#: journal entry can never reconcile. So ten checks failed on a customisation
+#: that worked, and the review blamed the developer for a record the gate had
+#: half built.
+#:
+#: An allowlist, not an open call: `create` plus an arbitrary method name would
+#: let a plan invoke anything on any model, which is a much larger power than
+#: "make this record real". These are the documented ways an Odoo draft becomes
+#: a live document, and nothing here deletes, cancels or pays anything.
+ALLOWED_ACTIONS = frozenset({
+    "action_post",         # account.move, account.payment
+    "action_confirm",      # sale.order, purchase.order
+    "action_validate",     # stock.picking, hr.expense
+    "action_done",
+    "button_confirm",
+    "button_validate",
+})
+
+
+def run_action(conn, model: str, res_id: int, method: str) -> None:
+    """Move a created record out of draft.
+
+    Refuses anything not in `ALLOWED_ACTIONS`, and refuses on a model the gate
+    may not create in the first place: a transition is a write, and it belongs
+    under the same rules as the write that made the record.
+    """
+    assert_writable(conn)
+    if model in FORBIDDEN_MODELS:
+        raise FixtureError(f"{model} is not a model a review may change.")
+    if method not in ALLOWED_ACTIONS:
+        raise FixtureError(
+            f"{method!r} is not an allowed transition. A fixture may only run: "
+            + ", ".join(sorted(ALLOWED_ACTIONS)) + ".")
+    try:
+        conn.call(model, method, [[int(res_id)]])
+    except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
+        raise FixtureError(
+            f"{model}.{method} on #{res_id} was refused: {exc}") from exc
+
+
 def resolve(conn, ledger: Ledger, *, ref: str, model: str, domain: list) -> int:
     """Point a ref at a record that already exists. Creates nothing.
 

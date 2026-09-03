@@ -112,6 +112,39 @@ def _task_inputs(cfg, task_id: int) -> tuple[str, list]:
     return description, images
 
 
+def _task_url(cfg, task_id: int) -> str:
+    """A link to the task that works for whoever clicks it.
+
+    `/mail/view` rather than `/web#id=...&model=project.task`. The backend URL
+    is wrong for half our staff: `web_client` in `web/controllers/home.py` ends
+    with
+
+        if not is_user_internal(request.session.uid):
+            return request.redirect('/web/login_successful', 303)
+
+    so a **portal** user following a backend link never reaches the task, they
+    land on a "you are logged in" page with no way back. The fragment does not
+    even survive it, since a browser never sends `#...` to the server.
+
+    `/mail/view` is Odoo's own answer to this, and it is what the links in
+    notification emails use. It resolves the record, then hands off through
+    `_get_access_action`, which branches on `user.share`: an internal user gets
+    the backend form, a portal user gets the portal page (`/my/tasks/<id>`),
+    and somebody not signed in gets the login page with this URL preserved as
+    the redirect. One link, correct for all three.
+
+    No `access_token` is passed, deliberately. A token would grant the record
+    to anyone holding the link, and these links sit on a page about a client's
+    staging instance. Access stays whatever Odoo already grants the person
+    signed in, so a portal user who cannot see the task still cannot, which is
+    the correct outcome rather than a bug to route around.
+    """
+    base = (getattr(cfg.odoo, "url", "") or "").rstrip("/")
+    if not base or not task_id:
+        return ""
+    return f"{base}/mail/view?model=project.task&res_id={task_id}"
+
+
 @router.get("/runs/{run_id}")
 def run_page(request: Request, run_id: int):
     session, redirect = _guard(request)
@@ -141,6 +174,10 @@ def run_page(request: Request, run_id: int):
         "durations": review.phase_durations(run_id),
         "total_secs": review.run_duration(run_id),
         "shots": review.screenshots_for(run_id),
+        "created": review.created_records(run_id),
+        "groups": review.grouped_progress(run, review.phase_durations(run_id)),
+        "result_order": review.RESULT_ORDER,
+        "task_url": _task_url(cfg, run.task_id),
         "working": run_id in _workers and _workers[run_id].is_alive(),
     })
 

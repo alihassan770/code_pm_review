@@ -33,6 +33,50 @@ TEMPLATE_DIR = __import__("pathlib").Path(__file__).resolve().parent / "template
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 
+def _no_em_dash(value):
+    """Render every em and en dash as a plain hyphen, everywhere.
+
+    The house style bans them. Enforcing that in the prompts alone is not
+    enough for two reasons: rows written before the ban still hold them, and a
+    model instructed not to use a character will occasionally use it anyway.
+    Neither is fixable at the point of writing, so the rule is applied at the
+    point of reading, which is the only place that sees all the text.
+
+    It runs as `finalize`, so it covers stored summaries, screenshot captions
+    and template literals alike without a filter having to be remembered at
+    each site. Non-strings pass through untouched, and a hyphen is harmless in
+    the URLs and class names that also flow through here.
+    """
+    if isinstance(value, str) and ("\u2014" in value or "\u2013" in value):
+        return value.replace("\u2014", "-").replace("\u2013", "-")
+    return value
+
+
+templates.env.finalize = _no_em_dash
+
+
+def _plain_number(value) -> str:
+    """Show an identifier like "R1" as plain "1".
+
+    Display only. The model is still asked for `R1`-style ids and the plan still
+    references them in `covers`, because a prefixed id is much harder to confuse
+    with a scenario id or an assertion id inside a prompt. That reasoning is
+    about the prompt, though, and none of it is the reader's problem: on the page
+    a numbered list should be numbered.
+
+    Anything that is not a single letter followed by digits is passed through
+    untouched, so an id in a shape this does not recognise is shown as it is
+    rather than mangled into something misleading.
+    """
+    text = str(value or "").strip()
+    if len(text) > 1 and text[0].isalpha() and text[1:].isdigit():
+        return text[1:]
+    return text
+
+
+templates.env.filters["plain_number"] = _plain_number
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = config_mod.load()

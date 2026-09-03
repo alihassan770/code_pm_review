@@ -72,18 +72,35 @@ def new_run(summary: str, *, task_id: int = 4471) -> int:
 
 
 print("\n== the note body ==")
-body = review.note_body("The discount carried to the invoice.\n\nNothing else moved.")
-check("it starts with the heading",
+# Two forms. HTML is only usable by an INTERNAL account: `message_post` escapes
+# a plain string, and its `body_is_html` escape hatch is gated on
+# `self.env.user._is_internal()`. A portal service account sending markup gets a
+# note reading `<p><b>PM REVIEW SUMMARY</b>` as literal characters on the task,
+# which is how this was found.
+SUMMARY = "The discount carried to the invoice.\n\nNothing else moved."
+
+body = review.note_body(SUMMARY, html=True)
+check("html: it starts with the heading",
       body.startswith("<p><b>PM REVIEW SUMMARY</b></p>"), body[:60])
-check("the summary text follows it", "The discount carried to the invoice." in body)
-check("blank lines become separate paragraphs", body.count("<p>") == 3, body)
-check("nothing else is added",
+check("html: the summary text follows it", "The discount carried to the invoice." in body)
+check("html: blank lines become separate paragraphs", body.count("<p>") == 3, body)
+check("html: nothing else is added",
       "href" not in body and "<img" not in body and "<table" not in body)
 
-nasty = review.note_body("A <script>alert(1)</script> title & an ampersand")
-check("the summary is escaped, not rendered",
+plain = review.note_body(SUMMARY)
+check("plain is the default, since the usual account is a portal user",
+      "<p>" not in plain and "<b>" not in plain, plain)
+check("plain still carries the heading", plain.startswith("PM REVIEW SUMMARY:"), plain)
+check("plain still carries the summary",
+      "The discount carried to the invoice." in plain and "Nothing else moved." in plain)
+check("plain joins paragraphs with something that survives HTML rendering",
+      "\n\n" not in plain, repr(plain))
+
+nasty = review.note_body("A <script>alert(1)</script> title & an ampersand", html=True)
+check("html: the summary is escaped, not rendered",
       "&lt;script&gt;" in nasty and "<script>" not in nasty, nasty)
-check("an empty summary produces no body", review.note_body("   ") == "")
+check("an empty summary produces no body",
+      review.note_body("   ") == "" and review.note_body("   ", html=True) == "")
 
 print("\n== posting ==")
 fake_odoo.MESSAGES.clear()

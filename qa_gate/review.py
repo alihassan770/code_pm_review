@@ -57,8 +57,20 @@ log = logging.getLogger(__name__)
 #: only what the run found, and it never edits the task's description, stage, or
 #: fields. Plan §11 assumes this channel exists — the test plan is meant to be
 #: posted to the task before execution, which is the same mechanism.
-PHASES = ["interpret", "code_check", "blast_radius", "plan", "execute", "cleanup",
-          "verdict", "summarise", "report"]
+#: `cleanup` and `verdict` are deliberately absent.
+#:
+#: Nothing created on a client's staging is deleted any more. The operator asked
+#: for that directly: records left in place can be inspected, and the ledger
+#: (`review_fixtures`) records exactly which ones this app made, so "did I create
+#: this or did the gate" has an answer. `fixtures.rollback` and
+#: `qa-gate leftovers` still exist for when somebody chooses to tidy up; it is a
+#: decision, not a step in every run.
+#:
+#: The verdict was never worth a phase of its own. It is arithmetic over the
+#: assertion results, takes no measurable time, and happens inside `summarise`
+#: where the sentence about it is written.
+PHASES = ["interpret", "code_check", "blast_radius", "plan", "execute",
+          "summarise", "report"]
 
 PHASE_TITLES = {
     "interpret": "Read the task",
@@ -66,8 +78,6 @@ PHASE_TITLES = {
     "blast_radius": "Work out what else is affected",
     "plan": "Decide what to test",
     "execute": "Run the scenarios",
-    "cleanup": "Remove the records it created",
-    "verdict": "Compute the verdict",
     "summarise": "Write the summary",
     "report": "Post the summary to the Odoo task",
 }
@@ -258,16 +268,6 @@ def cancel(run_id: int, *, secret_key: str = "") -> None:
     state changes, and a failure to reach the instance never blocks the cancel —
     the ledger row survives either way and `fixtures.orphans()` will still find it.
     """
-    if secret_key:
-        try:
-            from . import clients as clients_mod
-            from . import instance as instance_mod
-            run = get(run_id)
-            if run and live_fixture_count(run_id):
-                _cleanup(run_id, instance_mod.connect(
-                    clients_mod.get(run.client_id), secret_key))
-        except Exception as exc:  # noqa: BLE001 - cancelling must always work
-            log.warning("run %s cancelled but cleanup failed: %s", run_id, exc)
     db.execute(
         "UPDATE review_runs SET state = 'cancelled', finished_at = now() "
         "WHERE id = %s AND state = ANY(%s)", (run_id, list(ACTIVE_STATES)))
@@ -382,6 +382,7 @@ Rules:
 to confirm them; do not guess from the task's prose.
 - If a mockup marks where a field or button goes, say the exact label and the \
 position in "from_images".
+- Never use an em dash or en dash in any text you return.
 - The source code you are given is the code that is ALREADY DEPLOYED. If it \
 already implements what the description asks for, that is expected and is not \
 worth remarking on — it means the developer did the work. Write the requirement \
@@ -399,6 +400,7 @@ trace in the repository and would read as missing when they are fine.
 - Give the identifier as it would be WRITTEN IN PYTHON: lowercase with \
 underscores. "Hi-Tea" becomes `hi_tea`; a custom field is often prefixed `x_`.
 - An empty list is a correct answer. An invented requirement is not.
+- Never use an em dash or en dash in anything you write. Use a comma, a colon, or a full stop instead. This applies to every field you return.
 - No prose outside the JSON object."""
 
 
@@ -429,7 +431,7 @@ def interpret(run: Run, *, description: str, images: list[tuple[str, bytes, str]
             context += "\n\nWHAT THE ATTACHED IMAGES SHOW:\n" + "\n".join(
                 f"- {name}: {text}" for name, text in notes)
 
-    answer = client.complete(INTERPRET_SYSTEM, context, model=ai.MODEL_REASONING,
+    answer = client.complete(INTERPRET_SYSTEM, context, model=client.provider.reasoning,
                              json_object=True, max_tokens=16000)
     parsed = answer.as_json()
     return {"parsed": parsed, "reasoning": answer.reasoning,
@@ -510,6 +512,7 @@ task never mentions them. Say so.
 through; name the file and method.
 - Rank risk by how likely a regression is to go unnoticed, not by severity.
 - Empty lists are fine. Invented ones are not.
+- Never use an em dash or en dash in anything you write. Use a comma, a colon, or a full stop instead. This applies to every field you return.
 - No prose outside the JSON object."""
 
 
@@ -547,7 +550,7 @@ def blast_radius(run: Run, *, requirements: dict, client_id: int,
     except source_bundle.BundleError:
         pass
 
-    answer = client.complete(BLAST_SYSTEM, context, model=ai.MODEL_REASONING,
+    answer = client.complete(BLAST_SYSTEM, context, model=client.provider.reasoning,
                              json_object=True, max_tokens=16000)
     parsed = answer.as_json()
 
@@ -577,11 +580,17 @@ Answer ONLY with a JSON object:
      "kind": "requirement|regression",
      "covers": ["R1"],
      "flow": "which form or menu this exercises",
+     "screen": {"kind": "form|list|wizard|settings|groups|access",
+                "model": "account.move",
+                "record": "inv1",
+                "domain": [["name", "=", "Auto reconcile statement lines"]],
+                "highlight": ["field_or_button_name", "..."]},
      "fixtures": [
        {"ref": "bank", "model": "account.journal",
         "find": [["type", "=", "bank"]]},
        {"ref": "inv1", "model": "account.move",
-        "values": {"move_type": "out_invoice", "journal_id": "$bank"}}
+        "values": {"move_type": "out_invoice", "journal_id": "$bank"},
+        "then": ["action_post"]}
      ],
      "steps": ["one UI action per line, specific enough to follow blindly"],
      "assertions": [
@@ -597,6 +606,54 @@ Answer ONLY with a JSON object:
 }
 
 Rules:
+
+FIRST, DECIDE WHAT YOU ARE TESTING, THEN WRITE THE SCENARIOS.
+Before writing any JSON, work out which SCREENS the change touches and what
+each one has to prove. A scenario is one screen and one behaviour to prove
+about it. It is NOT one field.
+
+- ONE SCENARIO PER SCREEN AND BEHAVIOUR, NEVER ONE PER FIELD. If a wizard gains
+seven fields, that is ONE scenario that fills all seven and asserts on all
+seven, not seven scenarios. Seven scenarios against one wizard produce seven
+identical pictures of the same wizard, which is not evidence, it is noise. Put
+the seven checks in "assertions", where they are cheap, and leave "scenarios"
+counting screens.
+- Two scenarios may only share a screen when they prove genuinely different
+behaviour on it, for example the valid case and the refused case. If you cannot
+say in one sentence how the second differs, it is the same scenario.
+- Every scenario MUST carry "screen", because it is what gets photographed:
+  * "kind" says what the reviewer will be looking at. Use "wizard" for a
+    transient, "form" for one record, "list" for many, "settings" for a
+    configuration page, "groups" for a group definition, "access" for access
+    rights or record rules.
+  * "record" names a fixture ref when the picture should be of ONE record,
+    which is what makes the shot show fields already filled in rather than an
+    empty list. Prefer it whenever the scenario creates or finds a record.
+  * "domain" identifies ONE EXISTING record to photograph when the scenario did
+    not create it, for example the scheduled action or the group the change is
+    about. It must match exactly one record: a domain matching six is treated
+    as naming none, because a picture of the wrong one of six is worse than a
+    picture of the list.
+
+ALMOST EVERY SCENARIO SHOULD PHOTOGRAPH ONE RECORD, NOT A LIST.
+A list view proves nothing about a record. A scenario about one scheduled
+action evidenced by the Scheduled Actions list, forty rows deep with the
+relevant one somewhere in the middle, is not evidence: the reviewer still has
+to go and look. So every scenario about a specific thing MUST give either
+"record" or "domain". Ask yourself which single record a person would open to
+check this, and name it. Use "kind": "list" only when the scenario is genuinely
+about a set, for example "no duplicate journals were created".
+  * "highlight" lists the field and button names the scenario is actually
+    about, spelled as Odoo names ("partner_id", "x_studio_hi_tea"), NOT labels
+    and NOT CSS. They get a red ring drawn round them in the screenshot. On a
+    big form this is the difference between evidence and a wall of widgets, so
+    on any form with more than a handful of fields, "highlight" is required.
+    Keep it to the fields under test, ringing twenty is the same as ringing none.
+- IF THE CHANGE TOUCHES CONFIGURATION, GROUPS OR ACCESS RIGHTS, SAY SO AND
+PHOTOGRAPH IT. A new group, a changed ir.model.access line, a record rule or a
+settings toggle each deserve their own scenario with "kind" set to "groups",
+"access" or "settings", and the model named. "It is configured correctly" is a
+claim nobody can check from a picture of a sale order.
 - AT MOST 12 scenarios in total. If there are more candidates than that, keep \
 the ones where a regression would go unnoticed longest and drop the rest — a \
 plan nobody has time to run is not a plan.
@@ -624,6 +681,25 @@ MUST create in "fixtures". Before writing each assertion ask "would this record 
 already exist on a real client's staging database?" If the answer is no, it is \
 a fixture you forgot. An empty "fixtures" list on a scenario that tests new \
 behaviour is almost always a mistake.
+- ANYTHING YOU CREATE IS A DRAFT. An account.move, an account.payment, a \
+sale.order or a stock.picking created this way is in its initial state: it has \
+no journal entry, it has moved no stock, and nothing has reconciled. If the \
+scenario needs the record to be live, add "then" with the transition that makes \
+it live, usually "action_post" for accounting and "action_confirm" for sales. \
+Forgetting this produces a check that can NEVER hold: asserting a payment you \
+just created has state "posted" fails every time, and it looks like the \
+developer's bug rather than yours. Allowed values are action_post, \
+action_confirm, action_validate, action_done, button_confirm, button_validate.
+- Do not assert that a record reached a state you never asked it to reach. \
+Either add the "then" that gets it there, or assert on what a draft record \
+actually shows.
+- STATE VALUES DIFFER BY ODOO VERSION AND YOU MUST NOT GUESS THEM. On Odoo 18 \
+and 19 an account.payment is draft, in_process, paid, canceled or rejected: \
+there is NO "posted" state, that is account.move. Getting this wrong produces a \
+check that cannot hold and reads as the developer's bug. If you are not certain \
+of a selection value on the version in the context above, assert on something \
+you are certain of, for example that a many2one is set, or that a boolean like \
+is_reconciled is true.
 - Fixtures may reference each other in creation order: a later fixture's values \
 may use a ref you defined earlier.
 - Give the minimum that makes the assertion checkable, with only the fields Odoo \
@@ -642,12 +718,43 @@ in fixtures — those are refused too.
 setting, an installed module). For anything the scenario is testing, use a \
 fixture.
 - Steps must be concrete UI actions: menu path, button label, field name.
+- Never use an em dash or en dash in anything you write. Use a comma, a colon, or a full stop instead. This applies to every field you return.
 - No prose outside the JSON object."""
 
 
-def plan(run: Run, *, requirements: dict, impacted: dict, secret_key: str) -> dict:
+def _client_version(client_id: int) -> str:
+    """The Odoo version recorded for this client, or "" if none is.
+
+    Read from the client row rather than from a live connection, because the
+    plan runs before any connection to the instance is opened. An empty answer
+    is fine: the prompt simply omits the line rather than asserting a version
+    nobody set.
+    """
+    # Imported here, like every other use of it in this module: `clients` pulls
+    # in config and crypto, and review.py is imported by the CLI in contexts
+    # where neither is loaded. The first version of this reached for a
+    # module-level `clients_mod` that does not exist, and the broad `except`
+    # below reported it as "no version set" rather than as the NameError it was.
+    from . import clients as clients_mod
+
+    try:
+        row = clients_mod.get(client_id)
+    except Exception as exc:  # noqa: BLE001 - a missing version is not fatal
+        log.info("could not read the Odoo version for client %s: %s", client_id, exc)
+        return ""
+    return (getattr(row, "odoo_version", "") or "").strip() if row else ""
+
+
+def plan(run: Run, *, requirements: dict, impacted: dict, secret_key: str,
+         odoo_version: str = "") -> dict:
     client = ai.client(secret_key)
-    context = (f"REQUIREMENTS:\n{json.dumps(requirements, indent=2)[:8000]}\n\n"
+    # The version is in the prompt because the plan's mistakes are
+    # version-shaped: `account.payment.state` lost `posted` in Odoo 18, and a
+    # plan written against 17 asserts a value that cannot exist. The prompt
+    # tells it not to guess; this is what it is not guessing about.
+    header = f"TARGET ODOO VERSION: {odoo_version}\n\n" if odoo_version else ""
+    context = (header
+               + f"REQUIREMENTS:\n{json.dumps(requirements, indent=2)[:8000]}\n\n"
                f"BLAST RADIUS:\n{json.dumps(impacted, indent=2)[:8000]}\n")
     context += _answer_block(run.id)
     # The largest budget of any phase, and it earns it: this is where a dozen
@@ -670,7 +777,7 @@ def plan(run: Run, *, requirements: dict, impacted: dict, secret_key: str) -> di
     # rather than hoped: the flash plan covered all six requirements, produced
     # regression scenarios, bound its assertions to fixtures, and asked for zero
     # forbidden models.
-    answer = client.complete(PLAN_SYSTEM, context, model=ai.MODEL_FAST,
+    answer = client.complete(PLAN_SYSTEM, context, model=client.provider.fast,
                              json_object=True, max_tokens=48000)
     return {"parsed": answer.as_json(), "reasoning": answer.reasoning,
             "degraded": answer.degraded}
@@ -701,7 +808,17 @@ def compute_verdict(run: Run) -> tuple[str, str]:
         return "", "Nothing was asserted, so there is no verdict to give."
     tail = f" {blocked} could not be checked." if blocked else ""
     if failed and passed:
-        return "partial", f"{passed} of {passed + failed} checks held; {failed} did not.{tail}"
+        # `partial` has to MEAN mostly working, or it becomes a soft word for
+        # failure. One check holding out of eleven was reported as "partial",
+        # which reads as a near miss when it is the opposite. So a mixed result
+        # is only partial when the passes outnumber the failures; anything else
+        # is a fail. Ties fail too: half the checks failing is not a qualified
+        # success, and a gate in doubt should say the more cautious thing.
+        if passed > failed:
+            return "partial", (f"{passed} of {passed + failed} checks held; "
+                               f"{failed} did not.{tail}")
+        return "fail", (f"{failed} of {passed + failed} checks failed; only "
+                        f"{passed} held.{tail}")
     if failed:
         return "fail", f"All {failed} checks that could be made failed.{tail}"
     if not passed:
@@ -717,7 +834,8 @@ The verdict has already been computed from the assertion results. You are not \
 deciding it and you must not contradict it — you are saying, briefly, what \
 happened and what the reader should do next.
 
-Six sentences at most. No headings, no bullet lists, no preamble. Lead with what \
+Six sentences at most. No headings, no bullet lists, no preamble. Never use an
+em dash or en dash: use a comma, a colon, or a full stop. Lead with what \
 was found. Name the specific check that failed or was blocked, not the count. If \
 everything was blocked, say plainly that nothing was verified and why."""
 
@@ -741,14 +859,28 @@ def summarise(run: Run, *, verdict: str, note: str, secret_key: str) -> str:
 
 # ---- phase 6: report -------------------------------------------------------
 
-def note_body(summary: str) -> str:
+def note_body(summary: str, *, html: bool = False) -> str:
     """The chatter note: a heading, then the summary, and nothing else.
 
-    HTML because Odoo's chatter body is HTML, but deliberately the least of it —
-    a bold heading and paragraphs. No table of phases, no verdict badge, no link
-    back to this app, and no attachments. Everything beyond the text is a
-    decision about how the record should read, and the record belongs to the
-    people working the task, not to the tool watching it.
+    No table of phases, no verdict badge, no link back to this app, and no
+    attachments. Everything beyond the text is a decision about how the record
+    should read, and the record belongs to the people working the task, not to
+    the tool watching it.
+
+    ## Why this has two forms
+
+    Odoo's chatter body is HTML, but `message_post` **escapes a plain string**
+    (`'body': escape(body)` in `mail_thread.py`). The only ways round that are a
+    `Markup` object, which cannot survive JSON-RPC, or `body_is_html=True`,
+    which `mail_thread` honours **only for an internal user**:
+
+        if body_is_html and self.env.user._is_internal():
+
+    Our service account is a portal user, so the first version posted markup
+    that Odoo escaped and the note read as literal `<p><b>PM REVIEW SUMMARY</b>`
+    on the task. Sending HTML to an account that cannot post it produces a worse
+    note than sending none, so the caller asks for the form its credential can
+    actually use.
 
     The summary is escaped before any markup is added. It is model-written prose
     about a task somebody else typed, so treating it as HTML would let a stray
@@ -760,6 +892,12 @@ def note_body(summary: str) -> str:
     if not text:
         return ""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not html:
+        # Plain text, for a credential that cannot post HTML. Odoo escapes it,
+        # which is a no-op on text with no markup in it, and renders it as one
+        # block: newlines collapse in HTML, so paragraphs are joined with a
+        # separator that survives rather than with a break that does not.
+        return f"{NOTE_HEADING}: " + "  ".join(paragraphs)
     body = f"<p><b>{escape(NOTE_HEADING)}</b></p>"
     for para in paragraphs:
         body += "<p>" + escape(para).replace("\n", "<br/>") + "</p>"
@@ -784,15 +922,23 @@ def write_back(run: Run, *, cfg=None) -> dict:
     if run.reported_at:
         return {"posted": False, "skipped": "already posted",
                 "reported_at": run.reported_at.isoformat()}
-    body = note_body(run.summary)
-    if not body:
+    # The cheap refusals first, before opening a connection to find out there
+    # was nothing to send down it.
+    if not run.summary or not run.summary.strip():
         return {"posted": False, "skipped": "there is no summary to post"}
     if not run.task_id:
         return {"posted": False, "skipped": "this run is not attached to a task"}
 
     try:
         identity = projects.connect(cfg)
-        message_id = identity.post_note(run.task_id, body)
+        # Ask the credential what it can post rather than assuming HTML. A
+        # portal service account cannot, and markup it cannot post reads as
+        # literal angle brackets on the task.
+        as_html = identity.can_post_html()
+        body = note_body(run.summary, html=as_html)
+        if not body:
+            return {"posted": False, "skipped": "there is no summary to post"}
+        message_id = identity.post_note(run.task_id, body, is_html=as_html)
     except projects.NotConfigured as exc:
         return {"posted": False, "error": str(exc)}
     except (OdooError, OdooAuthError) as exc:
@@ -912,7 +1058,12 @@ def advance(run_id: int, *, secret_key: str, description: str = "",
             elif phase == "plan":
                 out = plan(run, requirements=_detail_of(run, "interpret"),
                            impacted=_detail_of(run, "blast_radius"),
-                           secret_key=secret_key)
+                           secret_key=secret_key,
+                           # From the client record, not from `conn`: the
+                           # connection is not opened until `execute`, several
+                           # phases later, so reaching for it here would raise
+                           # a NameError on every run.
+                           odoo_version=_client_version(run.client_id))
                 _save_step(run_id, phase, state="done", detail=out["parsed"],
                            reasoning=out["reasoning"],
                            note=out.get("degraded", ""))
@@ -964,52 +1115,32 @@ def advance(run_id: int, *, secret_key: str, description: str = "",
                                       stop=lambda: _should_stop(run_id),
                                       ledger=ledger)
                     except Paused:
-                        # §7: a pause frees the database. Records left behind
-                        # would be exactly the mess it promises not to leave.
-                        if ledger:
-                            _cleanup(run_id, conn)
+                        # Records created so far stay put. They are in the ledger
+                        # and shown on the run page, which is what makes them
+                        # distinguishable from a person's own work.
                         raise
                     if not writable:
                         out["not_writable"] = why
                     _save_step(run_id, phase, state="done", detail=out)
 
-            elif phase == "cleanup":
-                from . import clients as clients_mod
-                from . import instance as instance_mod
-                summary_row = {"removed": 0, "refused": []}
-                try:
-                    conn = instance_mod.connect(
-                        clients_mod.get(run.client_id), secret_key)
-                    summary_row = _cleanup(run_id, conn)
-                except Exception as exc:  # noqa: BLE001
-                    # An unreachable instance must not strand the run in a state
-                    # with no verdict — but it must also not look like a clean
-                    # sweep, so the reason is recorded on the step.
-                    _save_step(run_id, phase, state="failed",
-                               note=f"Could not remove created records: {exc}")
-                    log.warning("run %s cleanup failed: %s", run_id, exc)
-                else:
-                    note = ""
-                    if summary_row["refused"]:
-                        note = (f"{len(summary_row['refused'])} record(s) could not "
-                                "be removed and are still on the instance.")
-                    _save_step(run_id, phase, state="done", detail=summary_row,
-                               note=note)
-
-            elif phase == "verdict":
-                value, note = compute_verdict(run)
-                _save_step(run_id, phase, state="done",
-                           detail={"verdict": value, "note": note})
-                _set_state(run_id, "running", verdict=value)
-
             elif phase == "summarise":
                 value, note = compute_verdict(run)
                 text = summarise(run, verdict=value, note=note, secret_key=secret_key)
-                _save_step(run_id, phase, state="done", detail={"summary": text})
+                _save_step(run_id, phase, state="done",
+                           detail={"summary": text, "verdict": value, "note": note})
+                # The verdict is WRITTEN HERE, and forgetting to write it is the
+                # bug this line exists to prevent. When `verdict` was its own
+                # phase that phase persisted it; folding the arithmetic into
+                # `summarise` moved the computation and left the write behind,
+                # so runs completed all seven phases with an empty verdict. The
+                # run page then showed only the state ("done") while the task
+                # list kept showing an older run's verdict, which is exactly how
+                # it was noticed.
+                #
                 # Still `running`: the summary exists but has not been posted,
                 # and marking the run done here would stamp finished_at before
                 # the last phase had run.
-                _set_state(run_id, "running", summary=text[:4000])
+                _set_state(run_id, "running", summary=text[:4000], verdict=value)
 
             elif phase == "report":
                 # `run` was loaded before the summary was written, so re-read it.
@@ -1223,12 +1354,35 @@ def _read(conn, model: str, method: str, args=None, kwargs=None):
     is that check. It exists because the failure it prevents is silent and
     expensive: a review that created or wrote records would alter the very state
     it was asked to observe, and nobody reading a green verdict would know.
+
+    ## Archived records are visible here, deliberately
+
+    Odoo defaults `active_test` to True, so `search` on a model with an `active`
+    field silently drops archived rows. Measured on a real instance:
+    `ir.cron.search([])` returned **1** record, and the same call with
+    `active_test: False` returned **41**.
+
+    For a gate that is the wrong default and it fails in the worst direction.
+    A scenario checking a scheduled action reads nothing, the check is recorded
+    as "no record matches, this needs a fixture", and a reviewer concludes the
+    plan was badly written when in fact the record was sitting there archived.
+    Worse, "the cron is disabled" is a thing a review should be able to prove,
+    and it could not even see it.
+
+    So the archived state stops being a filter and becomes a fact: everything is
+    found, and a scenario that cares asserts on `active` explicitly. A caller
+    that genuinely wants only live records can still pass its own `active_test`,
+    which is not overridden.
     """
     if method not in READ_ONLY_METHODS:
         raise WriteAttempted(
             f"Execution may only read, but {model}.{method} was attempted. "
             "Creating fixtures is a separate step that belongs behind the "
             "pre-flight audit.")
+    kwargs = dict(kwargs or {})
+    context = dict(kwargs.get("context") or {})
+    context.setdefault("active_test", False)
+    kwargs["context"] = context
     return conn.call(model, method, args, kwargs)
 
 
@@ -1251,6 +1405,35 @@ def _coerce(expected: str, actual):
     except (TypeError, ValueError):
         pass
     return str(got).strip().lower() == want.lower()
+
+
+def _selection_values(conn, model: str, field: str) -> list[str]:
+    """The values a selection field allows here, or [] if it is not one.
+
+    Asked of the instance rather than assumed, because the whole point is that
+    the answer differs by version: `account.payment.state` lost `posted` in
+    Odoo 18. Cached per process, since a plan asserts the same few fields many
+    times and this is on the path of every failing check.
+    """
+    key = (model, field)
+    if key in _SELECTION_CACHE:
+        return _SELECTION_CACHE[key]
+    values: list[str] = []
+    try:
+        info = _read(conn, model, "fields_get", [[field]],
+                     {"attributes": ["selection", "type"]}) or {}
+        spec = info.get(field) or {}
+        if spec.get("type") == "selection":
+            values = [str(v) for v, _label in (spec.get("selection") or [])]
+    except Exception as exc:  # noqa: BLE001 - not knowing is not a failure
+        log.info("could not read %s.%s selection: %s", model, field, exc)
+    _SELECTION_CACHE[key] = values
+    return values
+
+
+#: Per process, and never invalidated: a field's selection does not change
+#: while a review runs, and a review is minutes long.
+_SELECTION_CACHE: dict[tuple[str, str], list[str]] = {}
 
 
 def _check_assertion(conn, assertion: dict, ledger=None) -> dict:
@@ -1309,12 +1492,41 @@ def _check_assertion(conn, assertion: dict, ledger=None) -> dict:
         out["note"] = (f"{len(rows)}+ {model} records match {domain!r}. The check "
                        "needs to identify one record, not a set.")
         return out
+    # The one record this check is about, kept so the screenshot can be of that
+    # record's form rather than a list the reviewer then has to search.
+    out["res_id"] = rows[0].get("id")
+    # Kept so a screenshot can fall back to the domain that identified this one
+    # record, when the scenario's own `screen` block named none.
+    out["domain"] = domain
+
     if field not in rows[0]:
         out["note"] = f"{model} has no field {field!r} on this instance."
         return out
 
     out["actual"] = rows[0][field]
-    out["state"] = PASSED if _coerce(expect, out["actual"]) else FAILED
+    if _coerce(expect, out["actual"]):
+        out["state"] = PASSED
+        return out
+
+    # Before calling this a failure, check the expectation was even possible.
+    # A plan asserted `account.payment.state == "posted"`, and on Odoo 18 that
+    # value does not exist: the states are draft, in_process, paid, canceled,
+    # rejected. The check could never hold, and reporting it as a failure blamed
+    # the developer for the plan using a value from an older version.
+    #
+    # So an impossible expectation is `blocked`, not `failed`. Blocked already
+    # means "this was not actually tested", which is the truth here, and it
+    # keeps a plan's mistake out of the verdict.
+    options = _selection_values(conn, model, field)
+    if options and str(expect).strip() not in options:
+        out["state"] = BLOCKED
+        out["note"] = (
+            f"{model}.{field} cannot be {expect!r} on this instance. The values "
+            f"it allows are: {', '.join(options)}. This is the plan using a "
+            "value from a different Odoo version, not a fault in the change.")
+        return out
+
+    out["state"] = FAILED
     return out
 
 
@@ -1340,10 +1552,19 @@ def _build_fixtures(conn, ledger, scenario: dict) -> tuple[int, list[str]]:
                                      model=str(spec.get("model") or ""),
                                      domain=find)
                 continue
-            fixtures_mod.create(conn, ledger, ref=ref,
-                                model=str(spec.get("model") or ""),
-                                values=_expand_refs(spec.get("values") or {}, ledger))
+            model = str(spec.get("model") or "")
+            res_id = fixtures_mod.create(
+                conn, ledger, ref=ref, model=model,
+                values=_expand_refs(spec.get("values") or {}, ledger))
             made += 1
+            # `create` leaves an accounting record in draft, and a draft record
+            # cannot reconcile, invoice or move stock. Without this the plan
+            # could build a payment and then assert it was posted, which is a
+            # check that can never hold however good the code is.
+            for method in spec.get("then") or []:
+                if not isinstance(method, str) or not method.strip():
+                    continue
+                fixtures_mod.run_action(conn, model, res_id, method.strip())
         except fixtures_mod.FixtureError as exc:
             errors.append(str(exc))
     return made, errors
@@ -1397,10 +1618,25 @@ SHOT_SYSTEM = """\
 You are describing a screenshot taken during an automated Odoo review, for \
 somebody who will read it without opening the instance.
 
-Two or three sentences. Say what view is on screen, what the notable values are, \
-and whether anything looks wrong (an error dialog, an empty list where records \
-were expected, a field missing). Do not speculate about code. Do not say whether \
-a test passed — you are describing evidence, not judging it."""
+Be SHORT. No em dashes or en dashes.
+
+Line 1: the view. Name it, for example "Payment wizard, form view" or \
+"Settings, Invoicing section" or "Access rights on account.move".
+
+Then, if fields are visible and filled, ONE line per field that carries a \
+value, as "field label: value". Skip empty fields and skip the chrome \
+(breadcrumb, status bar, chatter). Stop at eight lines. If a field is ringed in \
+red, put it FIRST and mark it "(under test)", the ring is there because that is \
+the thing the review is about.
+
+If the screen is a group, an access rule or a settings page, say plainly what \
+it grants or sets, since that is the whole content of the evidence.
+
+Last line only if something looks wrong: an error dialog, an empty list where \
+records were expected, a field that is missing.
+
+Do not speculate about code. Do not say whether a test passed, you are \
+describing evidence, not judging it."""
 
 
 def execute(run: Run, *, scenarios: list[dict], conn, staging_url: str,
@@ -1418,6 +1654,12 @@ def execute(run: Run, *, scenarios: list[dict], conn, staging_url: str,
 
     results: list[dict] = []
     shots: list = []
+    #: screen key -> the scenario id that photographed it. What stops seven
+    #: assertions about one wizard producing seven copies of one picture.
+    seen_screens: dict = {}
+    #: Computed once for the whole plan, before any fixture exists, so
+    #: scenarios sharing a screen agree on what gets ringed in the one picture.
+    screen_groups = merge_screens(scenarios)
     ai_client = None
     try:
         ai_client = ai.client(secret_key)
@@ -1438,28 +1680,64 @@ def execute(run: Run, *, scenarios: list[dict], conn, staging_url: str,
                       for a in (scenario.get("assertions") or [])]
 
             shot = None
-            models = [c["model"] for c in checks if c["model"]]
-            try:
-                # Odoo has no /odoo/<model> route — guessing one produced a
-                # "Missing Action" dialog in every screenshot of the first run.
-                # The real path is through an action the instance actually has,
-                # so ask it for one.
-                action = _action_for(conn, models[0]) if models else 0
-                page.goto(f"/odoo/action-{action}" if action else "/odoo")
-                shot = page.shot(f"{scenario.get('id')} — {scenario.get('title')}")
-            except browser.BrowserError as exc:
-                log.info("no screenshot for %s: %s", scenario.get("id"), exc)
-            except Exception as exc:  # noqa: BLE001
-                log.info("screenshot failed for %s: %s", scenario.get("id"), exc)
+            ringed: list[str] = []
+            screen = _screen_plan(scenario, checks, ledger, screen_groups, conn)
+            shared_with = ""
+            if screen and screen["key"] in seen_screens:
+                # Another scenario already photographed this exact screen. A
+                # second identical picture is not a second piece of evidence,
+                # so point at the first one instead of taking it again.
+                shared_with = seen_screens[screen["key"]]
+                log.info("%s reuses the screen shot for %s",
+                         scenario.get("id"), shared_with)
+            elif screen:
+                try:
+                    # Odoo has no /odoo/<model> route, guessing one produced a
+                    # "Missing Action" dialog in every screenshot of the first
+                    # run. The real path is through an action the instance
+                    # actually has, so ask it for one.
+                    action = _action_for(conn, screen["model"])
+                    if screen["res_id"]:
+                        # The form of one record, so the fields are shown
+                        # filled in. This is the picture a reviewer wanted when
+                        # they asked to see the wizard after it was completed.
+                        page.record(screen["model"], screen["res_id"], action=action)
+                    else:
+                        page.goto(f"/odoo/action-{action}" if action else "/odoo")
+                    ringed = page.highlight(screen["highlight"])
+                    covers = [c for c in screen.get("covers") or []
+                              if c and c != scenario.get("id")]
+                    caption = f"{scenario.get('id')}: {scenario.get('title')}"
+                    if covers:
+                        # Say what else this one picture is evidence for, so a
+                        # reader is not left looking for a missing screenshot.
+                        caption += f"  [also covers {', '.join(covers)}]"
+                    # The caption does not list what was ringed. The ring is
+                    # drawn in the picture, so naming the fields again is the
+                    # caption repeating what the reader can already see.
+                    # `ringed` still feeds the description prompt below, where
+                    # it decides which fields get described first.
+                    shot = page.shot(caption)
+                    seen_screens[screen["key"]] = str(scenario.get("id") or "")
+                except browser.BrowserError as exc:
+                    log.info("no screenshot for %s: %s", scenario.get("id"), exc)
+                except Exception as exc:  # noqa: BLE001
+                    log.info("screenshot failed for %s: %s", scenario.get("id"), exc)
 
             described = ""
             if shot and ai_client:
                 import base64
                 try:
+                    ask = f"Scenario: {scenario.get('title')}."
+                    if screen.get("kind"):
+                        ask += f" This is a {screen['kind']} screen."
+                    if ringed:
+                        ask += (" Ringed in red, so describe these first: "
+                                + ", ".join(ringed) + ".")
                     described = ai_client.vision(
                         SHOT_SYSTEM,
                         "data:image/png;base64," + base64.b64encode(shot.png).decode(),
-                        f"Scenario: {scenario.get('title')}. Describe this screen.",
+                        ask + " Describe this screen.",
                     ).text
                 except ai.AIError as exc:
                     log.info("could not describe shot: %s", exc)
@@ -1475,15 +1753,162 @@ def execute(run: Run, *, scenarios: list[dict], conn, staging_url: str,
                 "fixtures_made": made, "fixture_errors": fixture_errors,
                 "id": scenario.get("id"), "title": scenario.get("title"),
                 "kind": scenario.get("kind"), "flow": scenario.get("flow"),
+                # Carried through so the run page can show somebody how to
+                # repeat this by hand. A gate that only says pass or fail
+                # teaches nobody the flow it just tested.
+                "steps": [x for x in (scenario.get("steps") or [])
+                          if isinstance(x, str) and x.strip()],
                 "checks": checks,
                 "passed": sum(1 for c in checks if c["state"] == PASSED),
                 "failed": sum(1 for c in checks if c["state"] == FAILED),
                 "blocked": sum(1 for c in checks if c["state"] == BLOCKED),
                 "described": described,
+                "screen": {k: v for k, v in (screen or {}).items() if k != "key"},
+                "shares_screen_with": shared_with,
                 "screenshot_url": shot.url if shot else "",
             })
 
     return {"scenarios": results}
+
+
+#: Models that ARE the configuration, so a "groups"/"access"/"settings" scenario
+#: photographs the definition itself rather than a record that happens to be
+#: governed by it.
+CONFIG_MODELS = {
+    "groups": "res.groups",
+    "access": "ir.model.access",
+    "settings": "res.config.settings",
+}
+
+
+def merge_screens(scenarios: list[dict]) -> dict:
+    """Group scenarios that photograph the same screen, unioning their rings.
+
+    The prompt tells the planner to write one scenario per screen rather than
+    one per field. This is the backstop for when it does not, and it is needed:
+    a plan that plausibly writes seven scenarios about one wizard is exactly the
+    plan that produced seven identical pictures.
+
+    Deduping on the whole screen INCLUDING the highlights does not help there,
+    because seven one-field scenarios have seven different rings and so seven
+    different keys. So the key is the screen alone, `(model, record ref)`, and
+    the rings from every scenario sharing it are merged. Seven scenarios about
+    one wizard become one picture of that wizard with seven fields ringed,
+    which is the evidence somebody actually wanted.
+
+    Keyed on the fixture REF rather than a database id because this runs before
+    the fixtures exist, and the ref is what the plan knows.
+    """
+    groups: dict = {}
+    for sc in scenarios or []:
+        screen = sc.get("screen") if isinstance(sc.get("screen"), dict) else {}
+        model = str(screen.get("model") or "").strip()
+        if not model:
+            continue
+        key = (model, str(screen.get("record") or "").strip(),
+               str(screen.get("kind") or "").strip().lower())
+        g = groups.setdefault(key, {"owner": str(sc.get("id") or ""),
+                                    "highlight": [], "members": []})
+        g["members"].append(str(sc.get("id") or ""))
+        for h in screen.get("highlight") or []:
+            if isinstance(h, str) and h.strip() and h.strip() not in g["highlight"]:
+                g["highlight"].append(h.strip())
+    return groups
+
+
+def _resolve_screen_record(conn, model: str, domain) -> int | None:
+    """Find the ONE record a screen should photograph.
+
+    The whole point of the change this exists for: a scenario about one
+    scheduled action was evidenced by a picture of the Scheduled Actions list,
+    forty rows deep, with the relevant one somewhere in the middle. A list is
+    not evidence about a record.
+
+    Returns None rather than a guess when the domain matches nothing or matches
+    several. Photographing "the first of six" and captioning it as the record
+    would be worse than photographing the list, because it would look precise.
+    """
+    if not model or not isinstance(domain, list) or not domain:
+        return None
+    try:
+        ids = _read(conn, model, "search", [domain], {"limit": 2})
+    except Exception as exc:  # noqa: BLE001 - a screenshot is not worth a run
+        log.info("could not resolve %s %r for a screenshot: %s", model, domain, exc)
+        return None
+    if len(ids) == 1:
+        return int(ids[0])
+    log.info("screen domain %r on %s matched %s records, so no form to open",
+             domain, model, len(ids))
+    return None
+
+
+def _screen_plan(scenario: dict, checks: list[dict], ledger,
+                 groups: dict | None = None, conn=None) -> dict:
+    """Work out the one picture this scenario should produce.
+
+    Built from the plan's `screen` block, falling back to the old behaviour
+    (the list view of whatever the first assertion reads) when a plan predates
+    it, so an old run still photographs something.
+
+    The important part is `key`. Scenarios that would photograph the identical
+    screen share a key, and the caller captures it once. That is what stops
+    seven checks on one wizard becoming seven copies of the same picture.
+    """
+    screen = scenario.get("screen") if isinstance(scenario.get("screen"), dict) else {}
+    kind = str(screen.get("kind") or "").strip().lower()
+    model = str(screen.get("model") or "").strip()
+    ref = str(screen.get("record") or "").strip()
+    domain = screen.get("domain")
+    highlight = [h for h in (screen.get("highlight") or []) if isinstance(h, str)]
+
+    # Everything ringed by every scenario sharing this screen, so the single
+    # picture carries all of it rather than one field per copy.
+    group = (groups or {}).get((model, ref, kind)) if model else None
+    if group:
+        highlight = list(group["highlight"])
+
+    # Configuration is its own screen. A scenario about a new group is not
+    # evidenced by a picture of a sale order that the group happens to govern.
+    if kind in CONFIG_MODELS:
+        model = model if kind == "settings" and model else CONFIG_MODELS[kind]
+        ref = ""
+
+    if not model:
+        model = next((c["model"] for c in checks if c.get("model")), "")
+    if not model:
+        return {}
+
+    # One record beats a list: a form shows the fields already filled in, which
+    # is the picture the reviewer wanted, and a list of a thousand rows is not.
+    res_id = ledger.id_of(ref) if (ref and ledger is not None) else None
+    if not res_id:
+        # The plan named no fixture, but an assertion may still pin exactly one.
+        for c in checks:
+            if c.get("model") == model and c.get("res_id"):
+                res_id = c["res_id"]
+                break
+    if not res_id and conn is not None:
+        # Still nothing, so look the record up from the screen's own domain.
+        # This is the case that produced a list view of forty scheduled actions:
+        # the scenario knew exactly which cron it meant and nothing turned that
+        # into an id.
+        res_id = _resolve_screen_record(conn, model, domain)
+    if not res_id and conn is not None:
+        # Last resort, an assertion's domain. An assertion has already been
+        # required to identify one record, so if one exists it is the right one.
+        for c in checks:
+            if c.get("model") == model and isinstance(c.get("domain"), list):
+                res_id = _resolve_screen_record(conn, model, c["domain"])
+                if res_id:
+                    break
+
+    return {"kind": ("form" if res_id and kind in ("", "list") else (kind or "list")),
+            "model": model, "res_id": res_id, "highlight": highlight,
+            "covers": (group or {}).get("members") or [],
+            # The screen, NOT the screen plus its rings. Two scenarios looking
+            # at one wizard produce one picture even when they ring different
+            # fields, which is the whole point.
+            "key": (model, res_id or 0)}
 
 
 def _save_shot(run_id: int, seq: int, scenario_id, shot, described: str) -> None:
@@ -1529,6 +1954,84 @@ def latest_by_task(client_id: int, task_ids: list[int]) -> dict[int, Run]:
          ORDER BY task_id, started_at DESC
         """, (client_id, list(task_ids)))
     return {r["task_id"]: _run_from_row(r) for r in rows}
+
+
+def verdicts_by_task(client_id: int, task_ids: list[int]) -> dict[int, Run]:
+    """The most recent run that actually reached a verdict, per task.
+
+    Separate from `latest_by_task` because they answer different questions, and
+    conflating them lost real results. A task reviewed to `partial` on Tuesday
+    and retried on Wednesday, where the retry died in `execute`, has both a
+    verdict and a failed last attempt. Keying the badge off the latest run made
+    Wednesday erase Tuesday: the task dropped back to "Start Review" as though
+    it had never been looked at, and the only trace of the verdict was a "Last
+    attempt" link that pointed at the wrong run.
+
+    So a verdict is sticky. It stops being the answer when a newer run produces
+    a different one, not when a newer run fails to produce any.
+    """
+    if not task_ids:
+        return {}
+    rows = db.query(
+        """
+        SELECT DISTINCT ON (task_id) *
+          FROM review_runs
+         WHERE client_id = %s AND task_id = ANY(%s) AND verdict <> ''
+         ORDER BY task_id, started_at DESC
+        """, (client_id, list(task_ids)))
+    return {r["task_id"]: _run_from_row(r) for r in rows}
+
+
+def verdict_tally(client_ids: list[int]) -> dict[str, int]:
+    """How the last review of each task concluded, across these clients.
+
+    Per task, not per run. Counting runs would let one task retried six times
+    outvote five tasks reviewed once, and the question the dashboard is asking
+    is "how is the work doing", not "how much did the gate run".
+    """
+    out = {"pass": 0, "partial": 0, "fail": 0}
+    if not client_ids:
+        return out
+    rows = db.query(
+        """
+        SELECT verdict, count(*) AS n FROM (
+            SELECT DISTINCT ON (client_id, task_id) verdict
+              FROM review_runs
+             WHERE client_id = ANY(%s) AND verdict <> ''
+             ORDER BY client_id, task_id, started_at DESC
+        ) latest
+        GROUP BY verdict
+        """, (list(client_ids),))
+    for r in rows:
+        if r["verdict"] in out:
+            out[r["verdict"]] = int(r["n"])
+    return out
+
+
+def recent(client_ids: list[int], limit: int = 6) -> list[dict]:
+    """The last few runs, for the dashboard's activity list."""
+    if not client_ids:
+        return []
+    return db.query(
+        """
+        SELECT r.id, r.task_id, r.state, r.verdict, r.started_at, r.finished_at,
+               c.name AS client_name, c.id AS client_id
+          FROM review_runs r JOIN clients c ON c.id = r.client_id
+         WHERE r.client_id = ANY(%s)
+         ORDER BY r.started_at DESC
+         LIMIT %s
+        """, (list(client_ids), limit))
+
+
+def active_count(client_ids: list[int]) -> int:
+    """Reviews running or waiting on somebody right now."""
+    if not client_ids:
+        return 0
+    row = db.query_one(
+        "SELECT count(*) AS n FROM review_runs "
+        "WHERE client_id = ANY(%s) AND state IN ('queued','running','paused')",
+        (list(client_ids),))
+    return int(row["n"]) if row else 0
 
 
 # ---- phase 2: is it even in the code? --------------------------------------
@@ -1610,3 +2113,111 @@ def code_check(run: Run, *, symbols: list[dict], client_id: int) -> dict:
             "nothing_implemented" if len(missing) == len(out) else
             "partially_implemented" if missing else "all_present"),
     }
+
+
+def created_records(run_id: int) -> list[dict]:
+    """Everything this run made on the client's instance, still there.
+
+    Nothing is deleted any more, so this is the answer to the question that
+    replaces cleanup: standing in Odoo looking at a record, did the gate create
+    this or did I? The ledger knows exactly, and this is how it says so.
+    """
+    return db.query(
+        """
+        SELECT ref, model, res_id, created_at,
+               (removed_at IS NOT NULL) AS removed
+          FROM review_fixtures
+         WHERE run_id = %s
+         ORDER BY id
+        """, (run_id,))
+
+
+# ---- how the phases are shown -----------------------------------------------
+#
+# The engine keeps `code_check`, `blast_radius` and `plan` as separate phases,
+# and that is not an implementation detail worth changing: each is its own
+# checkpoint, so a pause between them costs nothing and a resume replays
+# nothing. Collapsing them into one function would trade that for a tidier list.
+#
+# But a reader does not need three rows for "work out what to test". So the
+# split stays in the engine and the display groups them, which is a presentation
+# decision living in the presentation layer.
+
+PHASE_GROUPS = [
+    ("Read the task",                 ["interpret"]),
+    ("Work out what to test",         ["code_check", "blast_radius", "plan"]),
+    ("Run the scenarios",             ["execute"]),
+    ("Write the summary",             ["summarise"]),
+    ("Post the summary to the task",  ["report"]),
+]
+
+#: The order the *findings* are read in, which is not the order they were
+#: produced in. Somebody opening a finished run wants the verdict and the
+#: evidence first; how the plan was arrived at is reference material they scroll
+#: to. Running order is the ring; reading order is this.
+RESULT_ORDER = ["interpret", "summarise", "execute", "code_check",
+                "blast_radius", "plan", "report"]
+
+
+def grouped_progress(run: Run, durations: dict[str, int] | None = None) -> list[dict]:
+    """One row per visible step, with the state of the phases inside it.
+
+    `durations` is passed in rather than fetched here so this stays a pure
+    function of its arguments. An earlier version cached it at module level,
+    which would have been shared across every request and every worker thread.
+    """
+    durations = durations or {}
+    done = run.done_phases
+    by_phase = {s.phase: s for s in run.steps}
+
+    # How far the run actually got, as a position in PHASES. Anything earlier
+    # than this with no step row was never going to get one: it is a phase that
+    # did not exist when the run started, or one the engine skipped. Reading it
+    # as "pending" is what made an old run show a step stuck at running forever
+    # with finished steps below it.
+    reached = max((PHASES.index(p) for p in by_phase if p in PHASES),
+                  default=-1)
+
+    # A finished run has no pending work left, whatever the rows say. Without
+    # this a run that predates a phase shows it queued for ever.
+    over = run.state in ("done", "cancelled", "failed")
+
+    out = []
+    for label, phases in PHASE_GROUPS:
+        states = []
+        for phase in phases:
+            step = by_phase.get(phase)
+            if step:
+                # A step still marked running under a finished run was never
+                # closed, usually because the process died inside it. Repeating
+                # the stale row would show a spinner on a run that ended.
+                if over and step.state == "running":
+                    states.append("failed" if run.state == "failed" else "skipped")
+                else:
+                    states.append(step.state)
+            elif run.phase == phase and run.state == "running":
+                states.append("running")
+            elif over or (phase in PHASES and PHASES.index(phase) < reached):
+                states.append("skipped")
+            else:
+                states.append("pending")
+        real = [s for s in states if s != "skipped"]
+        if "failed" in states:
+            state = "failed"
+        elif real and all(s == "done" for s in real):
+            state = "done"
+        elif not real:
+            # Every phase in the group was skipped. Not a success, and not in
+            # progress either; showing it grey says so without claiming a result.
+            state = "pending"
+        elif "running" in states or any(s == "done" for s in states):
+            # Part-done counts as running: the group as a whole is in progress,
+            # and showing it as pending would hide work already finished.
+            state = "running"
+        else:
+            state = "pending"
+        secs = sum(durations.get(p, 0) for p in phases)
+        out.append({"label": label, "phases": phases, "state": state,
+                    "seconds": secs, "done": sum(1 for p in phases if p in done),
+                    "total": len(phases)})
+    return out

@@ -12,7 +12,8 @@ from dataclasses import replace
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
-from ... import ai, app_secrets, config as config_mod, github, projects
+from ... import (ai, app_secrets, app_settings, config as config_mod,
+                 github, projects, users)
 from ...odoo_client import OdooAuthError, OdooClient, OdooError
 from .. import deps
 
@@ -38,9 +39,22 @@ def _ctx(request: Request, **over) -> dict:
         # Only ever the fingerprint, never the key. `login_for` reads a column
         # that holds the last four characters; the secret itself is not decrypted
         # to render this page.
-        "deepseek_configured": app_secrets.is_configured(app_secrets.DEEPSEEK_KEY),
-        "deepseek_hint": app_secrets.login_for(app_secrets.DEEPSEEK_KEY),
-        "deepseek_model": ai.MODEL_REASONING,
+        # The AI provider an administrator chose, and the state of each
+        # provider's key. Keys are stored per provider, so the page can show
+        # which ones are already set rather than only the active one, and
+        # switching back to a provider you used before needs no retyping.
+        "provider": ai.selected(),
+        "providers": list(ai.PROVIDERS.values()),
+        "provider_keys": {
+            name: {"configured": app_secrets.is_configured(ai.secret_key_name(name)),
+                   "hint": app_secrets.login_for(ai.secret_key_name(name))}
+            for name in ai.PROVIDERS},
+        "ai_configured": ai.is_configured(),
+        # Roles. Two of them, and this is the whole list: an administrator sets
+        # the Odoo connection and the AI provider, everybody else uses what was
+        # set. Rendered here rather than on a page of its own because "who may
+        # change these" belongs next to the things they change.
+        "staff": users.list_all(),
     }
     ctx.update(over)
     return ctx
@@ -112,14 +126,20 @@ async def save_github_token(request: Request):
                        _ctx(request, ok=f"GitHub token verified as {who}."))
 
 
-@router.post("/settings/deepseek-key")
-async def save_deepseek_key(request: Request):
-    """Store a DeepSeek API key, after proving it works.
+@router.post("/settings/ai-provider")
+async def save_ai_provider(request: Request):
+    """Choose a provider and store its API key, after proving the key works.
 
-    Only the last four characters are kept in the clear, as a fingerprint: it is
-    enough to tell two keys apart when rotating one, and useless to anybody who
-    reads the row. The key itself is encrypted with the same Fernet key as every
-    other stored credential and is never rendered back into a page.
+    One provider is active at a time and it applies to everybody: the reviews
+    are run by us, so asking each user to bring their own account would bill our
+    costs to people who never see the tool. Admin-only for the same reason the
+    Odoo connection is, it decides what every other user's runs cost and where
+    their client source is sent.
+
+    Only the last four characters of a key are kept in the clear, as a
+    fingerprint: enough to tell two keys apart when rotating one, useless to
+    anybody who reads the row. The key itself is encrypted with the same Fernet
+    key as every other stored credential and is never rendered back into a page.
     """
     try:
         session, denied = _admin(request)
@@ -130,31 +150,103 @@ async def save_deepseek_key(request: Request):
 
     form = await request.form()
     deps.verify_csrf(session, form.get("csrf_token"))
-    key = (form.get("api_key") or "").strip()
     cfg = request.app.state.config
-    if not key:
+    name = (form.get("provider") or "").strip().lower()
+    provider = ai.PROVIDERS.get(name)
+    if not provider:
         return deps.render(request, "settings.html",
-                           _ctx(request, error="A DeepSeek API key is required."))
+                           _ctx(request, error="Choose one of the listed AI providers."))
+
+    key = (form.get("api_key") or "").strip()
+    stored = app_secrets.is_configured(ai.secret_key_name(provider.key))
+    if not key and stored:
+        # Switching back to a provider whose key is already held. Asking for it
+        # again would mean an administrator has to keep every key to hand just
+        # to change their mind, so selecting is enough.
+        app_settings.set_(app_settings.AI_PROVIDER, provider.key,
+                          updated_by=session.user.id)
+        log.info("AI provider set to %s by %s", provider.key, session.user.login)
+        return deps.render(request, "settings.html", _ctx(
+            request, ok=f"Now using {provider.label} with the key already stored."))
+    if not key:
+        return deps.render(request, "settings.html", _ctx(
+            request, error=f"An API key is required to use {provider.label}."))
+
     try:
-        models = ai.verify(key)
+        models = ai.verify(key, provider)
     except ai.AIError as exc:
         return deps.render(request, "settings.html", _ctx(request, error=str(exc)))
 
-    if ai.MODEL_REASONING not in models:
-        # Not fatal — the key is valid and the account may simply be scoped
-        # differently — but silently falling back to a model the reviewer did not
-        # choose is exactly the kind of thing that should be said out loud.
-        log.warning("DeepSeek key stored but %s is not in the visible model list: %s",
-                    ai.MODEL_REASONING, ", ".join(models))
-
-    app_secrets.set_(app_secrets.DEEPSEEK_KEY, login=key[-4:], secret=key,
+    app_secrets.set_(ai.secret_key_name(provider.key), login=key[-4:], secret=key,
                      secret_key=cfg.secret_key, updated_by=session.user.id)
-    log.info("DeepSeek key stored (••••%s) by %s", key[-4:], session.user.login)
-    note = f"DeepSeek key verified. Models available: {', '.join(models)}."
-    if ai.MODEL_REASONING not in models:
-        note += (f" Note that {ai.MODEL_REASONING} is not among them, so digests "
-                 "will fail until this account can reach it.")
+    app_settings.set_(app_settings.AI_PROVIDER, provider.key,
+                      updated_by=session.user.id)
+    log.info("%s key stored (....%s) and selected by %s",
+             provider.label, key[-4:], session.user.login)
+
+    note = f"{provider.label} key verified, and it is now the active provider."
+    if models and provider.reasoning not in models:
+        # Not fatal, the key is valid and the account may simply be scoped
+        # differently, but silently falling back to a model the reviewer did not
+        # choose is exactly the kind of thing that should be said out loud.
+        log.warning("%s key stored but %s is not in the visible model list: %s",
+                    provider.label, provider.reasoning, ", ".join(models))
+        note += (f" Note that {provider.reasoning} is not in this account's model "
+                 "list, so reviews will fail until it can reach that model.")
     return deps.render(request, "settings.html", _ctx(request, ok=note))
+
+
+@router.post("/settings/role")
+async def set_role(request: Request):
+    """Promote or demote one person between the two roles.
+
+    Two roles, deliberately: `user` runs reviews, `admin` also sets the Odoo
+    connection and the AI provider. Anything finer would be a permission model
+    for a tool used by one team.
+
+    **An administrator cannot demote themselves, and the last one cannot be
+    demoted at all.** Both guards exist because the failure they prevent is
+    unrecoverable from inside the app: a system with no administrator has nobody
+    who can appoint one, and the only way back is `qa-gate grant-admin` on the
+    server. Odoo's own `base.group_system` still grants admin on next sign-in,
+    so a demotion here is not permanent for a genuine Odoo sysadmin, and the
+    page says so.
+    """
+    try:
+        session, denied = _admin(request)
+    except deps.NotLoggedIn:
+        return deps.login_redirect(request)
+    if denied:
+        return denied
+
+    form = await request.form()
+    deps.verify_csrf(session, form.get("csrf_token"))
+    try:
+        target_id = int(form.get("user_id") or 0)
+    except ValueError:
+        target_id = 0
+    role = (form.get("role") or "").strip().lower()
+    target = users.get(target_id)
+
+    if not target or role not in ("user", "admin"):
+        return deps.render(request, "settings.html",
+                           _ctx(request, error="That is not a person and a role."))
+    if role == "user":
+        if target.id == session.user.id:
+            return deps.render(request, "settings.html", _ctx(
+                request, error="You cannot remove your own administrator rights. "
+                               "Ask another administrator to do it."))
+        if users.admin_count() <= 1:
+            return deps.render(request, "settings.html", _ctx(
+                request, error="This is the only administrator. Promote somebody "
+                               "else first, or nobody will be able to change "
+                               "these settings."))
+
+    users.set_admin(target.id, role == "admin")
+    log.info("%s set %s to %s", session.user.login, target.login, role)
+    return deps.render(request, "settings.html", _ctx(
+        request, ok=f"{target.name or target.login} is now "
+                    f"{'an administrator' if role == 'admin' else 'a user'}."))
 
 
 @router.post("/settings/service-credential")

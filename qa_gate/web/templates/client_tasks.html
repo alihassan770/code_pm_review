@@ -53,7 +53,7 @@
   <p class="text-[13px] leading-relaxed text-amber-900">
     Some projects could not be read, so this list is incomplete:
     {% for cp, msg in partial %}
-    <span class="mt-1 block font-mono text-[11.5px]">#{{ cp.odoo_project_id }} — {{ msg }}</span>
+    <span class="mt-1 block font-mono text-[11.5px]">#{{ cp.odoo_project_id }}, {{ msg }}</span>
     {% endfor %}
   </p>
 </div>
@@ -71,12 +71,48 @@
 </p>
 {% endif %}
 
+{# Two lists, not one. A task waiting for a review and a task that has had one
+   are different work, and before this the only way to tell them apart was to
+   scan every row for the absence of a badge. The stage filter above still
+   applies to both, it narrows which tasks are in scope; these tabs say what has
+   happened to them. #}
+{% set tabs = [('new', 'Not reviewed', fresh_count),
+               ('reviewed', 'Reviewed', reviewed_count),
+               ('all', 'All', fresh_count + reviewed_count)] %}
+<div class="mt-5 flex flex-wrap items-center gap-1 border-b border-slate-200">
+  {% for key, label, n in tabs %}
+  <a href="?view={{ key }}{% if request.query_params.get('stage') %}&stage={{ request.query_params.get('stage') }}{% endif %}"
+     class="-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px]
+            {{ 'border-brand-500 font-bold text-brand-700'
+               if view == key else
+               'border-transparent font-medium text-slate-500 hover:border-slate-300 hover:text-slate-800' }}">
+    {{ label }}
+    <span class="rounded-full px-1.5 py-0.5 text-[11px] font-semibold
+                 {{ 'bg-brand-100 text-brand-700' if view == key
+                    else 'bg-slate-100 text-slate-500' }}">{{ n }}</span>
+  </a>
+  {% endfor %}
+
+  {# The verdict split, on the tab it describes. Reading "9 reviewed" tells you
+     less than reading how many of them failed. #}
+  {% if view != 'new' and reviewed_count %}
+  <span class="ml-auto flex items-center gap-1.5 pb-2 text-[11.5px]">
+    {% if tally['pass'] %}<span class="rounded bg-emerald-50 px-1.5 py-0.5 font-semibold
+      text-emerald-700">{{ tally['pass'] }} passed</span>{% endif %}
+    {% if tally['partial'] %}<span class="rounded bg-amber-50 px-1.5 py-0.5 font-semibold
+      text-amber-800">{{ tally['partial'] }} partial</span>{% endif %}
+    {% if tally['fail'] %}<span class="rounded bg-rose-50 px-1.5 py-0.5 font-semibold
+      text-rose-700">{{ tally['fail'] }} failed</span>{% endif %}
+  </span>
+  {% endif %}
+</div>
+
 {% if tasks %}
-<div class="card mt-5 divide-y divide-slate-100">
+<div class="card mt-2 divide-y divide-slate-100">
   {% for cp, t in tasks %}
-  <div class="px-4 py-3 transition-colors hover:bg-brand-50/40">
-   <div class="flex items-center gap-4">
-    {# Expand pulls the description and attachments on demand — see
+  <div class="px-4 py-4 transition-colors hover:bg-brand-50/40">
+   <div class="flex items-start gap-4">
+    {# Expand pulls the description and attachments on demand, see
        /tasks/{id}/detail. The arrow rotates via the `open` class HTMX toggles. #}
     <button type="button"
             class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-100
@@ -122,62 +158,116 @@
         {% if t.write_date %}<span>updated {{ t.write_date.strftime('%d %b') }}</span>{% endif %}
       </div>
     </div>
-    {# What happened last time, then what to do next. A row that only ever
-       offers "Start Review" gives no way back to a result that already exists,
-       and invites re-running a task that has already passed. #}
+    {# What happened last time, then what to do next.
+
+       Two lines, not one. Four controls crammed onto the end of the title row
+       made the verdict, which is the single most important word in the row,
+       look like the first of four buttons. The verdict now sits alone on the
+       right of the title where nothing competes with it, and the actions get a
+       line of their own underneath. #}
     {% set run = runs.get(t.id) %}
-    <div class="flex shrink-0 items-center gap-2">
-      {% if run and run.verdict %}
-      {% set v = {'pass':  ('bg-emerald-50 text-emerald-800 ring-emerald-200', 'passed'),
-                  'partial':('bg-amber-50 text-amber-900 ring-amber-200',     'partial'),
-                  'fail':  ('bg-rose-50 text-rose-800 ring-rose-200',         'failed')} %}
-      {% set style, label = v.get(run.verdict, ('bg-slate-100 text-slate-700 ring-slate-200', run.verdict)) %}
+    {# `done` is the last run that reached a verdict, `run` is the last run of
+       any kind. They differ when a retry failed, and the row has to show both:
+       the verdict is still the answer, and the failed attempt is still news. #}
+    {% set done = verdicts.get(t.id) %}
+    {% set v = {'pass':    ('border-emerald-200 bg-emerald-50 text-emerald-800', 'Passed'),
+                'partial': ('border-amber-200 bg-amber-50 text-amber-900',       'Partial'),
+                'fail':    ('border-rose-200 bg-rose-50 text-rose-800',          'Failed')} %}
+
+    <div class="shrink-0">
+      {% if run and run.active %}
       <a href="/runs/{{ run.id }}"
-         class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px]
-                font-semibold ring-1 {{ style }} hover:brightness-95"
-         title="Open the full result">
-        {% if run.verdict == 'pass' %}
-        <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
-          d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 111.4-1.4l3.8 3.8 6.8-6.8a1 1 0 011.4 0z"
+         class="inline-flex items-center gap-2 rounded-lg border border-brand-200
+                bg-brand-50 px-3 py-1.5 text-[13px] font-bold text-brand-700">
+        <span class="h-2 w-2 rounded-full bg-brand-500 breathe"></span>
+        {{ 'Waiting on you' if run.state == 'paused' else 'Reviewing' }}
+      </a>
+      {% elif done %}
+      {% set style, label = v.get(done.verdict,
+           ('border-slate-200 bg-slate-100 text-slate-700', done.verdict)) %}
+      <a href="/runs/{{ done.id }}" title="Open the full result"
+         class="inline-flex items-center gap-2 rounded-lg border px-3 py-1.5
+                {{ style }} hover:brightness-95">
+        {% if done.verdict == 'pass' %}
+        <svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
+          d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z"
           clip-rule="evenodd"/></svg>
         {% else %}
-        <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
+        <svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
           d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z"
           clip-rule="evenodd"/></svg>
         {% endif %}
-        {{ label }}
+        <span class="text-left leading-tight">
+          <span class="block text-[10px] font-semibold uppercase tracking-[.1em] opacity-70">
+            PM review</span>
+          <span class="block text-[14px] font-bold">{{ label }}</span>
+        </span>
       </a>
-      <a href="/runs/{{ run.id }}" class="btn-ghost whitespace-nowrap text-[13px]">Result</a>
-
-      {# Re-running is possible but not the obvious action, and it says so. #}
-      <form method="post" action="/clients/{{ client.id }}/tasks/{{ t.id }}/review"
-            onsubmit="return confirm('This task was already reviewed ({{ run.verdict }}). Run it again?');">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="rounded-lg px-2 py-1.5 text-[12px] font-medium text-slate-400
-                       hover:bg-slate-100 hover:text-slate-700" title="Review again">
-          Re-run
-        </button>
-      </form>
-
-      {% elif run and run.active %}
-      <a href="/runs/{{ run.id }}"
-         class="inline-flex items-center gap-1.5 rounded-md bg-brand-50 px-2.5 py-1
-                text-[12px] font-semibold text-brand-700 ring-1 ring-brand-200">
-        <span class="h-2 w-2 animate-pulse rounded-full bg-brand-500"></span>
-        {{ 'waiting on you' if run.state == 'paused' else 'reviewing…' }}
-      </a>
-
-      {% else %}
-      <form method="post" action="/clients/{{ client.id }}/tasks/{{ t.id }}/review">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="btn-primary text-[13px]">Start Review</button>
-      </form>
-      {% if run %}
-      <a href="/runs/{{ run.id }}" class="btn-ghost whitespace-nowrap text-[13px]"
-         title="The last attempt did not finish">Last attempt</a>
-      {% endif %}
       {% endif %}
     </div>
+   </div>
+
+   {# The actions. Indented to line up with the title rather than the arrow, so
+      the row reads as one block instead of two. #}
+   <div class="mt-2.5 flex flex-wrap items-center gap-2 pl-12">
+     {% if run and run.active %}
+     <a href="/runs/{{ run.id }}" class="btn-ghost whitespace-nowrap text-[13px]">
+       Watch it run</a>
+     {% if done %}
+     <a href="/runs/{{ done.id }}" class="btn-ghost whitespace-nowrap text-[13px]"
+        title="The verdict from the previous review">Previous result</a>
+     {% endif %}
+
+     {% elif done %}
+     <a href="/runs/{{ done.id }}" class="btn-ghost whitespace-nowrap text-[13px]">
+       Open result</a>
+
+     {# Re-running stays the secondary action, the result is the one somebody
+        usually wants. Secondary is not the same as hidden though: this was
+        grey-on-white with no border and people could not find it. #}
+     <form method="post" action="/clients/{{ client.id }}/tasks/{{ t.id }}/review"
+           onsubmit="return confirm('This task was already reviewed ({{ done.verdict }}). Run it again?');">
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+       <button class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg
+                      border border-slate-300 bg-white px-2.5 py-1.5 text-[13px]
+                      font-semibold text-slate-700 hover:border-brand-300
+                      hover:bg-brand-50 hover:text-brand-700"
+               title="Review this task again">
+         <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+           <path d="M17 10a7 7 0 11-2.05-4.95M17 3v4h-4"/>
+         </svg>
+         Re-Run
+       </button>
+     </form>
+
+     {# A retry that died after a verdict already existed. The verdict stands,
+        but silently dropping the fact that the last attempt failed would leave
+        somebody wondering why the timestamps do not line up. Pushed to the far
+        end so it reads as a footnote to the row, not as a fourth button. #}
+     {% set last = runs.get(t.id) %}
+     {% if last and last.id != done.id and not last.verdict %}
+     <a href="/runs/{{ last.id }}"
+        class="ml-auto inline-flex items-center gap-1.5 whitespace-nowrap text-[12px]
+               font-medium text-amber-700 hover:text-amber-900"
+        title="A later review of this task did not finish">
+       <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd"
+         d="M8.3 3.3a2 2 0 013.4 0l6 10.4A2 2 0 0116 16.8H4a2 2 0 01-1.7-3.1l6-10.4zM10 7a1 1 0 011 1v3a1 1 0 11-2 0V8a1 1 0 011-1zm0 7.5a1 1 0 100-2 1 1 0 000 2z"
+         clip-rule="evenodd"/></svg>
+       last retry {{ last.state }}
+     </a>
+     {% endif %}
+
+     {% else %}
+     <form method="post" action="/clients/{{ client.id }}/tasks/{{ t.id }}/review">
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+       <button class="btn-primary text-[13px]">Start Review</button>
+     </form>
+     {% if run %}
+     <a href="/runs/{{ run.id }}" class="btn-ghost whitespace-nowrap text-[13px]"
+        title="The last attempt did not finish">Last attempt</a>
+     {% endif %}
+     {% endif %}
    </div>
 
    <div id="task-body-{{ t.id }}" class="hidden py-3 pl-11 pr-2">
@@ -191,10 +281,27 @@
 </p>
 
 {% elif not error %}
-<div class="card mt-6 px-6 py-14 text-center">
-  <h2 class="text-[15px] font-semibold text-slate-900">No tasks in this stage</h2>
+{# An empty tab is not an empty project, and saying "no tasks" on the reviewed
+   tab when eight are waiting to be reviewed would be wrong. #}
+<div class="card mt-2 px-6 py-14 text-center">
+  <h2 class="text-[15px] font-semibold text-slate-900">
+    {% if view == 'new' and reviewed_count %}Everything here has been reviewed
+    {% elif view == 'reviewed' %}Nothing has been reviewed yet
+    {% else %}No tasks in this stage{% endif %}
+  </h2>
   <p class="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-slate-500">
-    {% if active_stage %}
+    {% if view == 'new' and reviewed_count %}
+      All {{ reviewed_count }} task{{ '' if reviewed_count == 1 else 's' }} in
+      {% if active_stage %}<b>{{ active_stage }}</b>{% else %}this stage{% endif %}
+      has a verdict.
+      <a href="?view=reviewed" class="font-medium text-brand-600 underline
+         underline-offset-2">See the results</a>.
+    {% elif view == 'reviewed' and fresh_count %}
+      {{ fresh_count }} task{{ '' if fresh_count == 1 else 's' }}
+      {{ 'is' if fresh_count == 1 else 'are' }} still waiting.
+      <a href="?view=new" class="font-medium text-brand-600 underline
+         underline-offset-2">Start a review</a>.
+    {% elif active_stage %}
       Nothing is sitting in <b>{{ active_stage }}</b> across
       {{ client.projects|length }} project{{ '' if client.projects|length == 1 else 's' }}
       right now. Pick another stage above.

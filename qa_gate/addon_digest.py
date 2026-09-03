@@ -254,7 +254,7 @@ def build(*, repo: str, module: str, module_path: str, commit_sha: str,
     )
 
     try:
-        answer = client.complete(SYSTEM, context, model=ai.MODEL_REASONING,
+        answer = client.complete(SYSTEM, context, model=client.provider.reasoning,
                                  reasoning=True, json_object=True)
         parsed = answer.as_json()
     except ai.AIError as exc:

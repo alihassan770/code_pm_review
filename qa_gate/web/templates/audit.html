@@ -65,7 +65,7 @@
       <tr class="{{ 'bg-red-50/40' if row.audit and row.audit.verdict == 'refuse' }}">
         <td class="px-5 py-3">
           <a href="/clients/{{ row.client.id }}" class="font-medium hover:underline">{{ row.client.name }}</a>
-          <div class="font-mono text-[11px] text-slate-400">{{ row.client.staging_db or '—' }}</div>
+          <div class="font-mono text-[11px] text-slate-400">{{ row.client.staging_db or '-' }}</div>
         </td>
         <td class="px-5 py-3">{{ verdict_pill(row.audit.verdict if row.audit else none) }}</td>
         <td class="px-5 py-3">
@@ -76,7 +76,7 @@
           {% elif row.audit and row.audit.error %}
             <span class="text-[13px] text-amber-800">{{ row.audit.error }}</span>
           {% elif row.audit %}
-            <span class="text-slate-400">—</span>
+            <span class="text-slate-400">-</span>
           {% else %}
             <span class="text-slate-400">
               {% if row.client.has_credentials %}not audited yet{% else %}no credentials stored{% endif %}
@@ -87,7 +87,7 @@
           {{ row.warnings|length or '' }}
         </td>
         <td class="px-5 py-3 text-[13px] text-slate-500">
-          {{ row.audit.started_at.strftime('%Y-%m-%d %H:%M') if row.audit else '—' }}
+          {{ row.audit.started_at.strftime('%Y-%m-%d %H:%M') if row.audit else '-' }}
         </td>
         <td class="px-5 py-3 text-right">
           <a href="/clients/{{ row.client.id }}/audit"
@@ -102,7 +102,7 @@
 {% if never_audited %}
 <p class="mt-4 text-xs text-slate-500">
   {{ never_audited|length }} client(s) have never been audited. An instance with no audit
-  is not a clean instance — it is an unknown one.
+  is not a clean instance, it is an unknown one.
 </p>
 {% endif %}
 {% endif %}

@@ -25,7 +25,7 @@
 
   <div class="flex items-baseline justify-between gap-4">
     <div>
-      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }} — knowledge</h1>
+      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }} knowledge</h1>
       <p class="mt-1 text-xs text-slate-500">
         Read from <span class="font-mono">{{ client.github or 'no repo configured' }}</span>
         {% if snap and snap.commit_sha %}
@@ -62,7 +62,7 @@
     <svg class="h-4 w-4 shrink-0 text-emerald-600" viewBox="0 0 20 20" fill="currentColor">
       <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z" clip-rule="evenodd"/>
     </svg>
-    Knowledge base {{ 'updated' if synced == 'updated' else 'created' }} successfully —
+    Knowledge base {{ 'updated' if synced == 'updated' else 'created' }} successfully -
     {{ snap.modules|length }} addon{{ '' if snap.modules|length == 1 else 's' }}
     read at <span class="font-mono">{{ snap.short_sha }}</span>.
   </div>
@@ -85,7 +85,7 @@
   <p class="mt-8 rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
     This repo has not been read yet.
     {% if not client.github %}
-    Set the GitHub <span class="font-mono">owner/name</span> on the client page first — it
+    Set the GitHub <span class="font-mono">owner/name</span> on the client page first, it
     is the join key for everything in this phase.
     {% endif %}
   </p>
@@ -102,7 +102,7 @@
   </p>
   {% endif %}
 
-  {# Only real problems reach here now — a truncated read, a file we could not
+  {# Only real problems reach here now, a truncated read, a file we could not
      fetch. Things that are merely absent are not warnings. #}
   {% for w in snap.warnings %}
   <div class="mt-3 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -110,7 +110,7 @@
       <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/>
     </svg>
     <p class="text-[13px] leading-relaxed text-slate-600">
-      <span class="font-medium text-slate-700">Note</span> — {{ w }}
+      <span class="font-medium text-slate-700">Note:</span> {{ w }}
     </p>
   </div>
   {% endfor %}
@@ -142,7 +142,7 @@
               {{ lc[0].strftime('%Y-%m-%d') }}
               {% if lc[1] %}<span class="text-slate-400">· {{ lc[1] }}</span>{% endif %}
             {% else %}
-              <span class="text-slate-400">—</span>
+              <span class="text-slate-400">-</span>
             {% endif %}
           </td>
         </tr>

@@ -3,7 +3,7 @@
 
 {#
   Every check is listed, passing ones included. §3 requires a pass to be
-  auditable after the fact and not merely a silence — a page that shows only
+  auditable after the fact and not merely a silence, a page that shows only
   problems cannot tell you whether the mail check ran at all.
 #}
 
@@ -37,7 +37,7 @@
   </a>
   <div class="flex items-baseline justify-between">
     <div>
-      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }} — hygiene audit</h1>
+      <h1 class="text-xl font-semibold tracking-tight">{{ client.name }}, hygiene audit</h1>
       <p class="mt-1 font-mono text-xs text-slate-400">
         {{ client.staging_db or 'no database configured' }}
       </p>
@@ -63,7 +63,7 @@
 
   {% if not audit %}
   <p class="mt-8 rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
-    This instance has never been audited. That is not the same as clean — until the
+    This instance has never been audited. That is not the same as clean, until the
     checks have run, nobody knows whether it has live crons or an active mail server.
   </p>
 
@@ -91,11 +91,11 @@
       {{ audit.started_at.strftime('%Y-%m-%d %H:%M') }} ·
       {{ audit.duration_ms }} ms ·
       Odoo {{ audit.server_version or '?' }} ·
-      {{ audit.staging_url or '—' }}
+      {{ audit.staging_url or '-' }}
     </p>
     <p class="mt-1 text-xs text-slate-500">
       Re-run before anything touches this instance. This result is never cached for a
-      run — a hosting provider can re-enable crons during a platform update without
+      run, a hosting provider can re-enable crons during a platform update without
       telling anyone.
     </p>
   </div>

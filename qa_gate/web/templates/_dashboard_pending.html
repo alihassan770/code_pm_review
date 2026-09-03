@@ -1,0 +1,115 @@
+{#
+  Tasks waiting for a review, swapped into the dashboard after it has rendered.
+
+  Two things arrive in this one response. The panel itself replaces the skeleton
+  it was fetched into, and the sentence in the hero is updated out of band, so
+  the headline count and the list can never disagree: they are computed once, by
+  the same request.
+#}
+
+{# ---- the line under the page title, swapped in place ----
+   Styled for the DARK hero panel, not for a card. Slate text here would be
+   almost invisible, and it is easy to miss because the fragment is written and
+   reviewed on its own while it only ever renders on violet. ---- #}
+<span id="pending-line" hx-swap-oob="true">
+  {%- if unconfigured -%}
+  <span class="text-white/75">Waiting on an Odoo service credential.</span>
+  {%- elif total -%}
+  <span class="rounded-md bg-white/15 px-1.5 py-0.5 font-bold text-white">{{ total }}</span>
+  <span class="text-white/75">task{{ '' if total == 1 else 's' }}
+  {{ 'is' if total == 1 else 'are' }} waiting for a review.</span>
+  <a href="#waiting" class="font-bold text-white underline decoration-white/40
+     underline-offset-4 hover:decoration-white">Let's get through them</a>.
+  {%- else -%}
+  <span class="inline-flex items-center gap-1.5 text-emerald-300">
+    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 6 9 17l-5-5"/></svg>
+    Nothing is waiting for a review.
+  </span>
+  {%- endif -%}
+</span>
+
+{# ---- the panel ---- #}
+<div class="card overflow-hidden" id="waiting">
+  <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+    <h2 class="text-[13px] font-bold text-slate-800">
+      Waiting for review
+      {% if total %}
+      <span class="ml-1 rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-bold
+                   text-brand-700">{{ total }}</span>
+      {% endif %}
+    </h2>
+    {% if total > waiting|length %}
+    <span class="text-[11.5px] text-slate-400">showing {{ waiting|length }}</span>
+    {% endif %}
+  </div>
+
+  {% if waiting %}
+  <ul class="divide-y divide-slate-100">
+    {% for w in waiting %}
+    <li class="rise" style="--i: {{ loop.index0 }};">
+      <a href="/clients/{{ w.client.id }}/tasks?view=new"
+         class="group flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-brand-50/50">
+        {# The client's own colour, the same hue the dashboard table gives it,
+           so a row can be traced back to a client without reading the name. #}
+        {% set h = (w.client.id * 137) % 360 %}
+        <span class="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[11px]
+                     font-bold text-white"
+              style="background-image:linear-gradient(140deg,
+                     hsl({{ h }} 62% 58%), hsl({{ (h + 26) % 360 }} 58% 46%));"
+              title="{{ w.client.name }}">{{ w.client.name[:1]|upper }}</span>
+        <span class="min-w-0 flex-1">
+          <span class="flex items-center gap-1.5">
+            {% if w.task.is_urgent %}
+            <svg class="h-3 w-3 shrink-0 text-amber-500" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M10 1.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8L1.5 7.7l5.9-.9L10 1.5z"/>
+            </svg>
+            {% endif %}
+            <span class="truncate text-[13px] font-semibold text-slate-800
+                         group-hover:text-brand-700">{{ w.task.name }}</span>
+          </span>
+          <span class="block truncate text-[11.5px] text-slate-400">
+            {{ w.client.name }} · #{{ w.task.id }}
+            {%- if w.task.write_date %} · updated {{ w.task.write_date.strftime('%d %b') }}{% endif %}
+          </span>
+        </span>
+        <svg class="h-4 w-4 shrink-0 text-slate-300 transition-transform
+                    group-hover:translate-x-0.5 group-hover:text-brand-500"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+
+  {% else %}
+  <div class="px-4 py-10 text-center">
+    <span class="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-emerald-50
+                 text-emerald-600">
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6 9 17l-5-5"/></svg>
+    </span>
+    <p class="mt-2 text-[13px] font-semibold text-slate-700">
+      {% if unconfigured %}No service credential{% else %}All caught up{% endif %}
+    </p>
+    <p class="mx-auto mt-1 max-w-[16rem] text-xs leading-relaxed text-slate-400">
+      {% if unconfigured %}
+      Set an Odoo service credential under Settings and this fills itself in.
+      {% else %}
+      Nothing is sitting in a review stage without a verdict.
+      {% endif %}
+    </p>
+  </div>
+  {% endif %}
+
+  {# Never let a client we could not reach pass as "nothing waiting". The count
+     above is only as complete as the instances that answered. #}
+  {% if stalled %}
+  <p class="border-t border-slate-100 px-4 py-2 text-[11.5px] text-amber-700">
+    {{ stalled }} client{{ '' if stalled == 1 else 's' }} could not be read, so this
+    list may be short.
+  </p>
+  {% endif %}
+</div>

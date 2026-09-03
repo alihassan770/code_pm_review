@@ -2,51 +2,149 @@
 {% block title %}Dashboard · Odoo PM Agent{% endblock %}
 
 {% block content %}
-<div class="flex items-start justify-between gap-6">
-  <div>
-    <h1 class="text-[1.35rem] font-semibold tracking-tight">Dashboard</h1>
-    <p class="mt-1 text-sm text-slate-500">
-      {{ clients|length }} client{{ '' if clients|length == 1 else 's' }} registered.
-    </p>
+{# The header, on the same dark violet as the sidebar and the sign-in panel.
+
+   It was a near-white tint before, which made it a slightly different shade of
+   the page rather than a thing on it. Carrying the brand surface across means
+   the screen has an obvious place to start, and it ties the page to the
+   sidebar beside it instead of floating next to it.
+
+   Everything inside is re-tuned for a dark background: white and white/75 text
+   rather than slate, a white button rather than the violet one which would
+   vanish, and the verdict bar on a translucent track instead of a grey one.
+
+   No sweeping highlight across it. A repeating animation on a panel that stays
+   on screen is movement in the corner of the eye with nothing to report, and it
+   pulls attention away every time it runs. Ambient motion here is only earned
+   by something that is actually happening, which is what the pulsing dot on a
+   live run is for. #}
+<div class="relative overflow-hidden rounded-2xl bg-brand-950 p-6 rise">
+  <div class="absolute inset-0 bg-gradient-to-br from-brand-700 via-brand-900 to-brand-950"></div>
+  {# The same faint grid as the sidebar, and one soft light source top left, so
+     the panel has some depth rather than being a flat block of colour. #}
+  <div class="grid-veil absolute inset-0"></div>
+  <div class="absolute -left-20 -top-24 h-72 w-72 rounded-full bg-brand-400/25 blur-3xl"></div>
+  <div class="absolute -bottom-24 right-8 h-56 w-56 rounded-full bg-fuchsia-500/10 blur-3xl"></div>
+
+  <div class="relative">
+    <div class="flex flex-wrap items-start justify-between gap-6">
+      <div class="min-w-0">
+        <p class="text-[11px] font-bold uppercase tracking-[.14em] text-brand-200">
+          Odoo PM Agent
+        </p>
+        <h1 class="mt-1 text-[1.7rem] font-bold tracking-tight text-white">
+          {% if user and user.name %}{{ user.name.split()[0] }}'s{% else %}Your{% endif %}
+          review desk
+        </h1>
+        <p class="mt-1 text-sm text-white/75">
+          {{ clients|length }} client{{ '' if clients|length == 1 else 's' }}
+          {%- if active %},
+          <a href="/clients" class="font-semibold text-white hover:underline">
+            <span class="mr-0.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle breathe"></span>
+            {{ active }} review{{ '' if active == 1 else 's' }} running now</a>
+          {%- else %}, nothing running right now{% endif %}.
+        </p>
+        {# Filled in by /dashboard/pending, which also renders the panel below,
+           so this sentence and that list are computed by one request and cannot
+           disagree with each other. #}
+        <p class="mt-1.5 text-[13.5px] text-white/75">
+          <span id="pending-line" class="text-white/55">Checking what is waiting…</span>
+        </p>
+      </div>
+      {% if clients %}
+      {# White, not `btn-primary`. A violet button on a violet panel is a button
+         you have to look for. #}
+      <a href="/clients/new"
+         class="inline-flex shrink-0 items-center gap-2 rounded-lg bg-white px-4 py-2.5
+                text-[13.5px] font-bold text-brand-800 shadow-lg shadow-brand-950/30
+                transition hover:bg-brand-50 active:translate-y-px">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        Add client
+      </a>
+      {% endif %}
+    </div>
+
+    {# The verdict split. A bar rather than three more numbers, because this is
+       the one thing on the page that IS a proportion: what matters is how much
+       of the reviewed work is failing, not the raw count. Numbers are printed
+       beside it, so the bar never has to be measured by eye. #}
+    {% set reviewed = tally['pass'] + tally['partial'] + tally['fail'] %}
+    {% if reviewed %}
+    <div class="mt-5">
+      <div class="flex h-2 w-full gap-0.5 overflow-hidden rounded-full bg-white/12">
+        {% for key, colour in [('pass', 'bg-emerald-400'), ('partial', 'bg-amber-300'),
+                               ('fail', 'bg-rose-400')] %}
+        {% if tally[key] %}
+        <span class="{{ colour }} grow-x rounded-full" style="--i: {{ loop.index0 }};
+              width: {{ (tally[key] / reviewed * 100)|round(1) }}%"></span>
+        {% endif %}
+        {% endfor %}
+      </div>
+      <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
+        {% for key, dot, label in [('pass','bg-emerald-400','passed'),
+                                   ('partial','bg-amber-300','partial'),
+                                   ('fail','bg-rose-400','failed')] %}
+        <span class="inline-flex items-center gap-1.5 {{ 'text-white' if tally[key]
+                     else 'text-white/55' }}">
+          <span class="h-2 w-2 rounded-full {{ dot if tally[key] else 'bg-white/20' }}"></span>
+          <span class="font-bold">{{ tally[key] }}</span> {{ label }}
+        </span>
+        {% endfor %}
+        <span class="text-white/75">of {{ reviewed }} task{{ '' if reviewed == 1 else 's' }} reviewed</span>
+      </div>
+    </div>
+    {% endif %}
   </div>
-  {# Only offered here when there is already a list to add to — the empty state
-     below carries its own call to action, and two identical buttons on one
-     screen makes neither look like the thing to press. #}
-  {% if clients %}
-  <a href="/clients/new" class="btn-primary shrink-0">
-    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-    Add client
-  </a>
-  {% endif %}
 </div>
 
 {% if clients %}
 {# ---- stat row. Deliberately not charts: three counts have no shape worth
-       plotting, and a number reads faster than a bar of length one. ---- #}
-<div class="mt-6 grid gap-3 sm:grid-cols-3">
+       plotting, and a number reads faster than a bar of length one. The colour
+       is identity, not encoding, so every tile also carries its own icon.
+
+       There is no "needs credentials" tile. It was a count of a problem, and a
+       count is the least useful form of a problem: it cannot be clicked and it
+       does not say which client. The amber banner below says that instead, and
+       names each one as a link. When nothing is missing the tile read zero and
+       earned nothing at all. ---- #}
+<div class="mt-4 grid gap-3 sm:grid-cols-3">
   {% set ready = clients|length - needs_credentials|length %}
-  {% for label, value, tone, hint in [
-      ('Clients',            clients|length,           'ink',     'registered in the gate'),
-      ('Ready to run',       ready,                    'good',    'staging credentials stored'),
-      ('Needs credentials',  needs_credentials|length, 'warning', 'cannot be reached yet')] %}
-  <div class="card p-4">
-    <div class="flex items-center gap-1.5">
-      {% if tone == 'good' and value %}
-      <svg class="h-3.5 w-3.5 text-emerald-600" viewBox="0 0 20 20" fill="currentColor">
-        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.7-9.3a1 1 0 00-1.4-1.4L9 10.6 7.7 9.3a1 1 0 00-1.4 1.4l2 2a1 1 0 001.4 0l4-4z" clip-rule="evenodd"/>
-      </svg>
-      {% elif tone == 'warning' and value %}
-      <svg class="h-3.5 w-3.5 text-amber-600" viewBox="0 0 20 20" fill="currentColor">
-        <path fill-rule="evenodd" d="M8.3 3.3a2 2 0 013.4 0l6 10.4A2 2 0 0116 16.8H4a2 2 0 01-1.7-3.1l6-10.4zM10 7a1 1 0 011 1v3a1 1 0 11-2 0V8a1 1 0 011-1zm0 7.5a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
-      </svg>
-      {% endif %}
-      <p class="text-[11px] font-semibold uppercase tracking-[.08em] text-slate-500">{{ label }}</p>
+  {% for label, value, hint, accent, chip, icon in [
+      ('Clients', clients|length, 'registered in the gate', '#8b5cf6',
+       'bg-brand-50 text-brand-600', 'users'),
+      ('Ready to run', ready, 'credentials stored', '#0ca30c',
+       'bg-emerald-50 text-emerald-600', 'check'),
+      ('Tasks reviewed', tally['pass'] + tally['partial'] + tally['fail'],
+       'with a verdict on record', '#38bdf8',
+       'bg-sky-50 text-sky-600', 'doc')] %}
+  <div class="card card-lift tile rise p-4" style="--tile-accent: {{ accent }}; --i: {{ loop.index0 + 1 }};">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <p class="text-[11px] font-semibold uppercase tracking-[.08em] text-slate-500">{{ label }}</p>
+        <p class="mt-1.5 text-[1.85rem] font-bold leading-none tracking-tight tabular-nums
+                  {{ 'text-slate-900' if value else 'text-slate-300' }}"
+           data-count="{{ value }}">{{ value }}</p>
+        <p class="mt-1.5 text-xs text-slate-400">{{ hint }}</p>
+      </div>
+      <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl {{ chip }}">
+        {% if icon == 'users' %}
+        <svg class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+          <path d="M20 19v-1.5a3.5 3.5 0 0 0-2.6-3.4M15 4.6a3.5 3.5 0 0 1 0 6.8"/></svg>
+        {% elif icon == 'check' %}
+        <svg class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 6 9 17l-5-5"/></svg>
+        {% else %}
+        <svg class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 3v4a1 1 0 0 0 1 1h4M15 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/>
+          <path d="M9 13h6M9 17h4"/></svg>
+        {% endif %}
+      </span>
     </div>
-    <p class="mt-1.5 text-[1.75rem] font-semibold leading-none tracking-tight text-slate-900">
-      {{ value }}
-    </p>
-    <p class="mt-1.5 text-xs text-slate-400">{{ hint }}</p>
   </div>
   {% endfor %}
 </div>
@@ -60,13 +158,22 @@
     Nothing can run against
     {% for c in needs_credentials %}<a href="/clients/{{ c.id }}"
       class="font-medium underline underline-offset-2">{{ c.name }}</a>{{ ", " if not loop.last }}{% endfor %}
-    until it can reach its staging instance — either a browser sign-in with a real
+    until it can reach its staging instance, either a browser sign-in with a real
     password, or an API key.
   </p>
 </div>
 {% endif %}
 
-<div class="card mt-6 overflow-hidden">
+{# Two columns from `lg` up: the client list is the reference, the activity
+   feed is the news. Below that they stack, news first, because on a phone the
+   thing you opened the page for is usually "what just happened". #}
+<div class="mt-4 grid items-start gap-4 lg:grid-cols-[1.6fr_1fr]">
+<div class="card overflow-hidden rise" style="--i: 5;">
+  <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+    <h2 class="text-[13px] font-bold text-slate-800">Clients</h2>
+    <a href="/clients" class="text-[12px] font-semibold text-brand-600 hover:text-brand-700">
+      All clients</a>
+  </div>
   <div class="overflow-x-auto">
   <table class="w-full text-sm">
     <thead>
@@ -74,7 +181,6 @@
         <th class="px-4 py-2.5 text-left font-semibold">Client</th>
         <th class="px-4 py-2.5 text-left font-semibold">Odoo</th>
         <th class="px-4 py-2.5 text-left font-semibold">Hosting</th>
-        <th class="px-4 py-2.5 text-left font-semibold">Staging database</th>
         <th class="px-4 py-2.5 text-left font-semibold">Status</th>
       </tr>
     </thead>
@@ -83,19 +189,30 @@
       <tr class="group transition-colors hover:bg-brand-50/40">
         <td class="px-4 py-3">
           <a href="/clients/{{ c.id }}" class="flex items-center gap-2.5">
-            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-100
-                         text-[12px] font-semibold text-brand-700">{{ c.name[:1]|upper }}</span>
+            {# Hue from the name, so clients stay apart in a long list, and
+               deterministic so one keeps its colour between page loads. 137
+               degrees is the golden angle: stepping the hue by it spreads
+               consecutive ids as far apart as they can go, so clients 1 and 2
+               do not come out near-identical shades of the same colour.
+               The initial is what identifies the row, the colour only helps
+               you find it again. #}
+            {% set h = (c.id * 137) % 360 %}
+            <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-[12.5px]
+                         font-bold text-white shadow-sm"
+                  style="background-image:linear-gradient(140deg,
+                         hsl({{ h }} 62% 58%), hsl({{ (h + 26) % 360 }} 58% 46%));">
+              {{ c.name[:1]|upper }}</span>
             <span>
-              <span class="block font-medium text-slate-900 group-hover:text-brand-700">{{ c.name }}</span>
-              <span class="block font-mono text-[11px] text-slate-400">{{ c.slug }}</span>
+              <span class="block font-semibold text-slate-900 group-hover:text-brand-700">{{ c.name }}</span>
+              <span class="block font-mono text-[11px] text-slate-400">{{ c.staging_db or c.slug }}</span>
             </span>
           </a>
         </td>
-        <td class="px-4 py-3 text-slate-600">{{ c.odoo_version }}</td>
-        <td class="px-4 py-3 text-slate-600">{{ c.hosting_label }}</td>
         <td class="px-4 py-3">
-          <span class="font-mono text-[12px] text-slate-500">{{ c.staging_db or '—' }}</span>
+          <span class="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[11.5px]
+                       font-semibold text-slate-600">{{ c.odoo_version }}</span>
         </td>
+        <td class="px-4 py-3 text-[13px] text-slate-600">{{ c.hosting_label }}</td>
         <td class="px-4 py-3">
           {# Icon + label, never colour alone. #}
           {% if c.has_credentials %}
@@ -123,10 +240,40 @@
   </div>
 </div>
 
+{# What is waiting for a review. This used to be a feed of recent runs, which
+   was a log: it told you what had already been dealt with. The question
+   somebody opens this page with is the opposite one, what still needs doing,
+   and that is a list you can act on rather than read.
+
+   Loaded after the page, not with it. Working it out means asking Odoo for the
+   tasks of every project of every client, which takes seconds; blocking the
+   whole dashboard on one panel would make the app feel slow to open. #}
+<div hx-get="/dashboard/pending" hx-trigger="load" hx-swap="outerHTML"
+     class="card overflow-hidden rise" style="--i: 6;">
+  <div class="border-b border-slate-200 px-4 py-3">
+    <h2 class="text-[13px] font-bold text-slate-800">Waiting for review</h2>
+  </div>
+  {# A skeleton, not a spinner. It holds the height the real list will take, so
+     the panel does not jump when the answer arrives. #}
+  <ul class="divide-y divide-slate-100">
+    {% for _ in range(4) %}
+    <li class="flex items-center gap-3 px-4 py-2.5">
+      <span class="h-7 w-7 shrink-0 rounded-lg bg-slate-100 shimmer"></span>
+      <span class="min-w-0 flex-1 space-y-1.5">
+        <span class="block h-2.5 rounded bg-slate-100 shimmer"
+              style="width: {{ [78, 62, 85, 55][loop.index0] }}%"></span>
+        <span class="block h-2 w-1/3 rounded bg-slate-100 shimmer"></span>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+</div>
+
 {% if unattached_count %}
 <p class="mt-3 text-xs text-slate-400">
   {{ unattached_count }} other client{{ '' if unattached_count == 1 else 's' }} you are not
-  attached to — see <a href="/clients" class="underline underline-offset-2">all clients</a>.
+  attached to, see <a href="/clients" class="underline underline-offset-2">all clients</a>.
 </p>
 {% endif %}
 
@@ -153,3 +300,33 @@
 </div>
 {% endif %}
 {% endblock %}
+
+{# Numbers count up on arrival. Written so the page is correct without it: the
+   final value is already in the element, and this only replays it. Anything
+   that needed JavaScript to show the right number would be a worse page, not a
+   nicer one.
+
+   Skipped entirely under `prefers-reduced-motion`, and for values large enough
+   that counting would be a distraction rather than a flourish. #}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    document.querySelectorAll('[data-count]').forEach(function (el, i) {
+      var target = parseInt(el.dataset.count, 10);
+      if (!Number.isFinite(target) || target <= 0 || target > 999) return;
+      var start = null, DURATION = 620;
+      el.textContent = '0';
+      setTimeout(function () {
+        requestAnimationFrame(function step(now) {
+          if (start === null) start = now;
+          var t = Math.min((now - start) / DURATION, 1);
+          // Ease out, so it decelerates into the final value instead of
+          // stopping dead on it.
+          el.textContent = Math.round(target * (1 - Math.pow(1 - t, 3)));
+          if (t < 1) requestAnimationFrame(step);
+          else el.textContent = target;
+        });
+      }, 120 + i * 70);
+    });
+  });
+</script>
